@@ -1,0 +1,38 @@
+# Sift Browser Sidecar — Fly.io Deployment
+# Self-contained Playwright browser server for persistent sessions.
+# Region: Dallas (dfw) to match sift-backend-app.
+#
+# Backend connects via Fly private networking:
+#   BROWSER_SIDECAR_BASE_URL=http://sift-browser.internal:3000
+#
+# No [http_service] block = zero public internet exposure.
+
+app = "sift-browser"
+primary_region = "dfw"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  NODE_ENV = "production"
+  PORT = "3000"
+  DATA_DIR = "/data"
+  NODE_OPTIONS = "--max-old-space-size=1024"
+
+[processes]
+  app = "node dist/server.js"
+
+[[vm]]
+  size = "shared-cpu-2x"
+  memory = "1024mb"
+
+[mounts]
+  source = "sift_browser_data"
+  destination = "/data"
+
+# Secrets to configure (run once):
+#   TOKEN=$(openssl rand -hex 32)
+#   fly secrets set -a sift-browser SIDECAR_TOKEN=$TOKEN
+#   fly secrets set -a sift-backend-app \
+#     BROWSER_SIDECAR_BASE_URL=http://sift-browser.internal:3000 \
+#     BROWSER_SIDECAR_TOKEN=$TOKEN
