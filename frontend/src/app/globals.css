@@ -1,0 +1,24 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --bg-primary:     #FFFFFF;
+  --bg-secondary:   #F0F7FF;
+  --blue-light:     #D6EAFF;
+  --blue-mid:       #4A9FE0;
+  --blue-dark:      #1A6BAF;
+  --accent-orange:  #F97316;
+  --accent-red:     #EF4444;
+  --text-primary:   #0F172A;
+  --text-secondary: #64748B;
+  --border:         #E2EAF4;
+  --radius-bubble:  9999px;
+  --radius-card:    16px;
+  --shadow-card:    0 4px 24px rgba(26,107,175,0.08);
+}
+
+body {
+  color: var(--text-primary);
+  background: var(--bg-primary);
+}
