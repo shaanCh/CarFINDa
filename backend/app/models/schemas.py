@@ -11,7 +11,7 @@ class SearchRequest(BaseModel):
     """Car search request with optional natural-language and structured filters."""
     natural_language: str = ""
     location: str = ""
-    radius_miles: int = 50
+    radius_miles: int = 250
     makes: list[str] = []
     budget_min: Optional[float] = None
     budget_max: Optional[float] = None
@@ -195,6 +195,115 @@ class NegotiationResponse(BaseModel):
     competing_listings: list[CompetingListing] = []
     walk_away_price: Offer
     negotiation_tips: list[str] = []
+
+
+# ---------------------------------------------------------------------------
+# Negotiate + DM (AI-powered outreach)
+# ---------------------------------------------------------------------------
+
+class SendDMRequest(BaseModel):
+    """Request to generate an AI negotiation message and send it via Facebook DM."""
+    listing: dict = Field(..., description="Listing dict (year, make, model, price, listing_url, etc.)")
+    scoring_data: Optional[dict] = Field(None, description="Enriched scoring data from the pipeline")
+    target_price: Optional[float] = Field(None, description="Desired price. Auto-calculated if omitted.")
+    strategy: str = Field("balanced", description="'aggressive', 'balanced', or 'friendly'")
+    send: bool = Field(True, description="If true, send the DM. If false, preview only.")
+
+
+class SendDMResponse(BaseModel):
+    """Result of AI-generated DM send."""
+    success: bool
+    message_sent: Optional[str] = None
+    target_price: Optional[float] = None
+    strategy_notes: Optional[str] = None
+    conversation_url: Optional[str] = None
+    error: Optional[str] = None
+
+
+class NegotiateReplyRequest(BaseModel):
+    """Request to generate an AI counter-offer and optionally send it."""
+    listing: dict = Field(..., description="The listing under negotiation")
+    seller_message: str = Field(..., description="The seller's latest reply text")
+    conversation_history: list[dict] = Field(
+        default_factory=list,
+        description="Previous messages: [{role: 'buyer'|'seller', message: str}]",
+    )
+    conversation_url: Optional[str] = Field(None, description="Messenger conversation URL")
+    scoring_data: Optional[dict] = None
+    target_price: Optional[float] = None
+    max_price: Optional[float] = None
+    strategy: str = "balanced"
+    auto_send: bool = Field(True, description="If true, auto-send safe replies (counters/accepts)")
+
+
+class NegotiateReplyResponse(BaseModel):
+    """Result of AI counter-offer generation."""
+    message: str
+    analysis: dict = {}
+    auto_sent: bool = False
+    should_send: bool = False
+    error: Optional[str] = None
+
+
+class CheckNegotiationsRequest(BaseModel):
+    """Request to check inbox and auto-respond to active negotiations."""
+    active_negotiations: list[dict] = Field(
+        ...,
+        description=(
+            "List of active negotiation dicts, each with: listing (dict), "
+            "conversation_url (str), target_price (float), max_price (float), "
+            "scoring_data (dict), history (list)"
+        ),
+    )
+    strategy: str = "balanced"
+
+
+class CheckNegotiationsResponse(BaseModel):
+    """Result of inbox check + auto-negotiation."""
+    replies_found: int = 0
+    responses: list[dict] = []
+
+
+class FacebookSearchRequest(BaseModel):
+    """Request to search Facebook Marketplace specifically."""
+    query: Optional[str] = None
+    makes: list[str] = []
+    models: list[str] = []
+    budget_min: Optional[float] = None
+    budget_max: Optional[float] = None
+    min_year: Optional[int] = None
+    max_mileage: Optional[int] = None
+    location: Optional[str] = None
+    radius_miles: Optional[int] = None
+    max_pages: int = Field(3, ge=1, le=10)
+
+
+class FacebookSearchResponse(BaseModel):
+    """Response from Facebook Marketplace search."""
+    success: bool
+    listings: list[dict] = []
+    total: int = 0
+    logged_in: bool = False
+    error: Optional[str] = None
+
+
+class FacebookLoginRequest(BaseModel):
+    """Request to trigger Facebook login."""
+    email: Optional[str] = Field(None, description="FB email. Uses env var if omitted.")
+    password: Optional[str] = Field(None, description="FB password. Uses env var if omitted.")
+
+
+class FacebookLoginResponse(BaseModel):
+    """Result of Facebook login attempt."""
+    success: bool
+    status: str = ""
+    needs_2fa: bool = False
+    error: Optional[str] = None
+
+
+class Facebook2FARequest(BaseModel):
+    """Request to submit a 2FA code."""
+    code: str
 
 
 # ---------------------------------------------------------------------------
