@@ -2,6 +2,7 @@ import asyncio
 import json
 import uuid
 import logging
+import hashlib
 from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
@@ -24,6 +25,8 @@ from app.services.llm.synthesizer import synthesize_recommendations
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/search", tags=["search"])
+
+_SEARCH_CACHE: dict[str, tuple[SearchResponse, float]] = {}
 
 
 @router.post(
@@ -48,6 +51,15 @@ async def create_search(
     """
     import time as _time
     _t0 = _time.monotonic()
+    
+    cache_key = hashlib.md5(request.model_dump_json().encode()).hexdigest()
+    if cache_key in _SEARCH_CACHE:
+        cached_resp, timestamp = _SEARCH_CACHE[cache_key]
+        if _t0 - timestamp < 120:
+            logger.info("Search memory cache HIT for %s", cache_key)
+            return cached_resp
+            
+    logger.info("Search memory cache MISS for %s", cache_key)
 
     settings = get_settings()
     user_id = user.get("user_id", "anon")
@@ -180,7 +192,9 @@ async def create_search(
     logger.info("Search complete in %.1fs total (scrape: %.1fs, score+synth: %.1fs)", _t3 - _t0, _t2 - _t1, _t3 - _t2)
 
     # ── Step 6: Build and return response ──
-    return _build_response(session_id, scored_listings, synthesis)
+    response = _build_response(session_id, scored_listings, synthesis)
+    _SEARCH_CACHE[cache_key] = (response, _time.monotonic())
+    return response
 
 
 async def _run_synthesis(scored_listings, user_query, preferences, settings):
