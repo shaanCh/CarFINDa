@@ -142,19 +142,26 @@ export interface Car {
   mpg?: string;
   location: string;
   sellerType: 'dealer' | 'private';
-  transmission: 'automatic' | 'manual';
+  transmission?: string;
   motor_type?: string;
   imageUrl: string;
   score: number;
   scoreBreakdown: {
-    budgetFit: number;
-    mileageScore: number;
+    safety: number;
     reliability: number;
-    priceVsMarket: number;
+    value: number;
+    efficiency: number;
+    ownershipCost: number;
+    recall: number;
   };
   marketAvgPrice?: number;
   recallCount?: number;
-  // New fields from synthesis
+  // Vehicle details
+  fuel_type?: string;
+  exterior_color?: string;
+  interior_color?: string;
+  drivetrain?: string;
+  // Synthesis
   headline?: string;
   explanation?: string;
   strengths?: string[];

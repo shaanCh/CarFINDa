@@ -48,7 +48,11 @@ async function fbApi(body: Record<string, unknown>) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   });
-  return res.json();
+  const data = await res.json();
+  if (!res.ok) {
+    throw new Error(data.error || data.detail || `Request failed (${res.status})`);
+  }
+  return data;
 }
 
 // ---------------------------------------------------------------------------
@@ -81,47 +85,54 @@ export function FacebookOutreach({ searchFilters, onClose }: Props) {
   const startFlow = useCallback(async () => {
     setError(null);
 
-    // Step 1: Login
-    setStep('logging-in');
-    setStatusText('Checking Facebook login...');
+    try {
+      // Step 1: Login
+      setStep('logging-in');
+      setStatusText('Checking Facebook login...');
 
-    const loginStatus = await fbApi({ action: 'login' });
-    if (loginStatus.needs_2fa) {
-      setError('Facebook requires 2FA. Please complete login manually and try again.');
+      const loginStatus = await fbApi({ action: 'login' });
+      if (loginStatus.needs_2fa) {
+        setError('Facebook requires 2FA. Please complete login manually and try again.');
+        setStep('idle');
+        return;
+      }
+      if (!loginStatus.success && loginStatus.error) {
+        setError(`Login failed: ${loginStatus.error}`);
+        setStep('idle');
+        return;
+      }
+
+      // Step 2: Search
+      setStep('searching');
+      setStatusText('Searching Facebook Marketplace...');
+
+      const searchResult = await fbApi({
+        action: 'search',
+        query: searchFilters.query,
+        makes: searchFilters.makes || [],
+        models: searchFilters.models || [],
+        budget_min: searchFilters.budget_min,
+        budget_max: searchFilters.budget_max,
+        min_year: searchFilters.min_year,
+        max_mileage: searchFilters.max_mileage,
+        location: searchFilters.location,
+        max_pages: 3,
+      });
+
+      if (!searchResult.success || !searchResult.listings?.length) {
+        setError(searchResult.error || 'No listings found on Facebook Marketplace.');
+        setStep('idle');
+        return;
+      }
+
+      setListings(searchResult.listings);
+      setStep('results');
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'An unexpected error occurred';
+      console.error('[FacebookOutreach] startFlow error:', err);
+      setError(msg);
       setStep('idle');
-      return;
     }
-    if (!loginStatus.success && loginStatus.error) {
-      setError(`Login failed: ${loginStatus.error}`);
-      setStep('idle');
-      return;
-    }
-
-    // Step 2: Search
-    setStep('searching');
-    setStatusText('Searching Facebook Marketplace...');
-
-    const searchResult = await fbApi({
-      action: 'search',
-      query: searchFilters.query,
-      makes: searchFilters.makes || [],
-      models: searchFilters.models || [],
-      budget_min: searchFilters.budget_min,
-      budget_max: searchFilters.budget_max,
-      min_year: searchFilters.min_year,
-      max_mileage: searchFilters.max_mileage,
-      location: searchFilters.location,
-      max_pages: 3,
-    });
-
-    if (!searchResult.success || !searchResult.listings?.length) {
-      setError(searchResult.error || 'No listings found on Facebook Marketplace.');
-      setStep('idle');
-      return;
-    }
-
-    setListings(searchResult.listings);
-    setStep('results');
   }, [searchFilters]);
 
   // ── Generate AI messages for selected listings ──
@@ -129,37 +140,57 @@ export function FacebookOutreach({ searchFilters, onClose }: Props) {
     setStep('generating');
     setStatusText('Crafting negotiation messages...');
 
-    const previews: DMPreview[] = [];
+    try {
+      const previews: DMPreview[] = [];
 
-    for (let i = 0; i < selected.length; i++) {
-      const listing = selected[i];
-      setStatusText(`Crafting message ${i + 1} of ${selected.length}...`);
+      for (let i = 0; i < selected.length; i++) {
+        const listing = selected[i];
+        setStatusText(`Crafting message ${i + 1} of ${selected.length}...`);
 
-      const result = await fbApi({
-        action: 'preview-dm',
-        listing: {
-          ...listing,
-          listing_url: listing.listing_url,
-          source_url: listing.listing_url,
-        },
-        strategy: 'balanced',
-        send: false,
-      });
+        try {
+          const result = await fbApi({
+            action: 'preview-dm',
+            listing: {
+              ...listing,
+              listing_url: listing.listing_url,
+              source_url: listing.listing_url,
+            },
+            strategy: 'balanced',
+            send: false,
+          });
 
-      previews.push({
-        listingId: listing.id,
-        message: result.message_sent || result.error || 'Failed to generate message',
-        targetPrice: result.target_price || null,
-        strategyNotes: result.strategy_notes || null,
-        approved: false,
-        sent: false,
-        sending: false,
-        error: result.error && !result.message_sent ? result.error : null,
-      });
+          previews.push({
+            listingId: listing.id,
+            message: result.message_sent || 'Failed to generate message',
+            targetPrice: result.target_price || null,
+            strategyNotes: result.strategy_notes || null,
+            approved: false,
+            sent: false,
+            sending: false,
+            error: null,
+          });
+        } catch (err) {
+          previews.push({
+            listingId: listing.id,
+            message: err instanceof Error ? err.message : 'Failed to generate message',
+            targetPrice: null,
+            strategyNotes: null,
+            approved: false,
+            sent: false,
+            sending: false,
+            error: err instanceof Error ? err.message : 'Generation failed',
+          });
+        }
+      }
+
+      setDmPreviews(previews);
+      setStep('review');
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Failed to generate messages';
+      console.error('[FacebookOutreach] generateMessages error:', err);
+      setError(msg);
+      setStep('results');
     }
-
-    setDmPreviews(previews);
-    setStep('review');
   }, []);
 
   // ── Toggle approval on a single message ──
@@ -193,24 +224,35 @@ export function FacebookOutreach({ searchFilters, onClose }: Props) {
         prev.map(p => p.listingId === preview.listingId ? { ...p, sending: true } : p)
       );
 
-      const result = await fbApi({
-        action: 'send-dm',
-        listing: {
-          ...listing,
-          listing_url: listing.listing_url,
-          source_url: listing.listing_url,
-        },
-        strategy: 'balanced',
-        send: true,
-      });
+      try {
+        const result = await fbApi({
+          action: 'send-dm',
+          listing: {
+            ...listing,
+            listing_url: listing.listing_url,
+            source_url: listing.listing_url,
+          },
+          strategy: 'balanced',
+          send: true,
+        });
 
-      setDmPreviews(prev =>
-        prev.map(p =>
-          p.listingId === preview.listingId
-            ? { ...p, sending: false, sent: result.success, error: result.error || null }
-            : p
-        )
-      );
+        setDmPreviews(prev =>
+          prev.map(p =>
+            p.listingId === preview.listingId
+              ? { ...p, sending: false, sent: result.success, error: result.error || null }
+              : p
+          )
+        );
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : 'Send failed';
+        setDmPreviews(prev =>
+          prev.map(p =>
+            p.listingId === preview.listingId
+              ? { ...p, sending: false, sent: false, error: msg }
+              : p
+          )
+        );
+      }
 
       // Delay between sends
       if (i < toSend.length - 1) {

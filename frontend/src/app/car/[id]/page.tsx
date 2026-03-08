@@ -376,6 +376,36 @@ function DetailContent({ id }: { id: string }) {
                 <span className="text-[var(--text-primary)] capitalize">{car.transmission}</span>
               </div>
             )}
+            {car.drivetrain && (
+              <div>
+                <span className="text-[10px] uppercase tracking-wider text-[var(--text-secondary)] font-semibold block mb-0.5">Drivetrain</span>
+                <span className="text-[var(--text-primary)]">{car.drivetrain}</span>
+              </div>
+            )}
+            {car.fuel_type && (
+              <div>
+                <span className="text-[10px] uppercase tracking-wider text-[var(--text-secondary)] font-semibold block mb-0.5">Fuel Type</span>
+                <span className="text-[var(--text-primary)] capitalize">{car.fuel_type}</span>
+              </div>
+            )}
+            {car.mpg && (
+              <div>
+                <span className="text-[10px] uppercase tracking-wider text-[var(--text-secondary)] font-semibold block mb-0.5">MPG</span>
+                <span className="text-[var(--text-primary)]">{car.mpg}</span>
+              </div>
+            )}
+            {car.exterior_color && (
+              <div>
+                <span className="text-[10px] uppercase tracking-wider text-[var(--text-secondary)] font-semibold block mb-0.5">Exterior</span>
+                <span className="text-[var(--text-primary)] capitalize">{car.exterior_color}</span>
+              </div>
+            )}
+            {car.interior_color && (
+              <div>
+                <span className="text-[10px] uppercase tracking-wider text-[var(--text-secondary)] font-semibold block mb-0.5">Interior</span>
+                <span className="text-[var(--text-primary)] capitalize">{car.interior_color}</span>
+              </div>
+            )}
             {car.vin && (
               <div>
                 <span className="text-[10px] uppercase tracking-wider text-[var(--text-secondary)] font-semibold block mb-0.5">VIN</span>

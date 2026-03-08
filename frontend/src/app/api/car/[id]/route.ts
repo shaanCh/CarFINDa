@@ -8,13 +8,13 @@ export async function GET(request: Request, context: { params: Promise<{ id: str
 
   try {
     const res = await fetch(`${BACKEND_URL}/api/listings/${idValue}`);
-    
+
     if (!res.ok) {
        return NextResponse.json({ error: 'Not Found' }, { status: 404 });
     }
 
     const data = await res.json();
-    
+
     // Map backend ListingWithScore to frontend Car schema
     const car: Car = {
       id: data.listing.id,
@@ -24,22 +24,32 @@ export async function GET(request: Request, context: { params: Promise<{ id: str
       trim: data.listing.trim,
       price: data.listing.price,
       mileage: data.listing.mileage || 0,
+      mpg: data.listing.mpg || undefined,
       location: data.listing.location || 'Unknown',
-      sellerType: 'private', // stub backward compat
-      transmission: data.listing.transmission || 'automatic',
-      imageUrl: data.listing.image_urls?.[0] || 'https://images.unsplash.com/photo-1590362891991-f776e747a588?auto=format&fit=crop&q=80&w=800',
-      score: Math.round((data.score.composite || 0) * 10), // convert 0-10 scale
+      sellerType: 'dealer',
+      transmission: data.listing.transmission || undefined,
+      motor_type: data.listing.motor_type || undefined,
+      fuel_type: data.listing.fuel_type || undefined,
+      exterior_color: data.listing.exterior_color || undefined,
+      interior_color: data.listing.interior_color || undefined,
+      drivetrain: data.listing.drivetrain || undefined,
+      imageUrl: data.listing.image_urls?.[0] || '',
+      score: Math.round(data.score.composite || 0),
       scoreBreakdown: {
-        budgetFit: Math.round((data.score.value || 0) * 10),
-        mileageScore: Math.round((data.score.safety || 0) * 10), 
-        reliability: Math.round((data.score.reliability || 0) * 10),
-        priceVsMarket: Math.round((data.score.composite || 0) * 10),
+        safety: Math.round(data.score.safety || 0),
+        reliability: Math.round(data.score.reliability || 0),
+        value: Math.round(data.score.value || 0),
+        efficiency: Math.round(data.score.efficiency || 0),
+        ownershipCost: Math.round(data.score.ownership_cost || 0),
+        recall: Math.round(data.score.recall_penalty || 0),
       },
-      marketAvgPrice: data.listing.price + 1200, // stub backward compat
-      recallCount: 0
+      recallCount: 0,
+      source_url: data.listing.source_url,
+      source_name: data.listing.source_name,
+      vin: data.listing.vin,
     };
 
-    return NextResponse.json({ 
+    return NextResponse.json({
       car,
       nhtsa: { issuesFound: car.recallCount || 0 },
       marketAvg: car.marketAvgPrice

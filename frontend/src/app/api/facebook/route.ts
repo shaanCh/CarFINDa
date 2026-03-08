@@ -33,11 +33,14 @@ export async function POST(request: Request) {
       payload.send = false;
     }
 
-    console.log(`[facebook-proxy] ${action} -> ${route.path}`);
+    console.log(`[facebook-proxy] ${action} -> ${route.path}`, JSON.stringify(payload).slice(0, 200));
 
-    // Use AbortController for a 3-minute timeout (search can be slow)
+    // Use AbortController for a 5-minute timeout (search + Gemini extraction can be slow)
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 180_000);
+    const timeout = setTimeout(() => {
+      console.error(`[facebook-proxy] ${action} timed out after 5 minutes`);
+      controller.abort();
+    }, 300_000);
 
     try {
       const backendRes = await fetch(`${BACKEND_URL}${route.path}`, {
@@ -51,7 +54,7 @@ export async function POST(request: Request) {
 
       if (!backendRes.ok) {
         const errorText = await backendRes.text();
-        console.error(`Backend ${action} error:`, backendRes.status, errorText);
+        console.error(`[facebook-proxy] ${action} error:`, backendRes.status, errorText);
         return NextResponse.json(
           { error: `Backend error: ${errorText}` },
           { status: backendRes.status },
@@ -59,7 +62,7 @@ export async function POST(request: Request) {
       }
 
       const data = await backendRes.json();
-      console.log(`[facebook-proxy] ${action} completed`);
+      console.log(`[facebook-proxy] ${action} completed`, action === 'search' ? `(${data.total || 0} listings)` : '');
       return NextResponse.json(data);
     } finally {
       clearTimeout(timeout);
