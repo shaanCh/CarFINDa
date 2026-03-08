@@ -14,6 +14,10 @@ const DATA_DIR = process.env.DATA_DIR || "/data";
 const PROFILES_DIR = path.join(DATA_DIR, "profiles");
 const IDLE_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
 
+// Profiles that need a visible browser (e.g., for user-facing DM automation).
+// All other profiles (scraping) run headless to avoid opening Chrome tabs.
+const HEADED_PROFILES = new Set(["carfinda-fb"]);
+
 export interface ProfileState {
   name: string;
   context: BrowserContext | null;
@@ -125,9 +129,14 @@ export async function ensureBrowser(name: string): Promise<BrowserContext> {
   }
   if (state.launching) return state.launching;
 
+  // Facebook/DM profiles run headed (visible) so the user can interact;
+  // all other profiles (scraping) run headless to avoid opening Chrome tabs.
+  const useHeaded = HEADED_PROFILES.has(name.toLowerCase());
+  const headlessArgs = useHeaded ? [] : ["--headless=new"];
+
   state.launching = chromium
     .launchPersistentContext(state.userDataDir, {
-      headless: false,
+      headless: !useHeaded,
       channel: "chrome",
       executablePath: process.env.CHROMIUM_PATH || undefined,
       args: [
@@ -136,7 +145,7 @@ export async function ensureBrowser(name: string): Promise<BrowserContext> {
         "--disable-dev-shm-usage",
         "--disable-background-networking",
         "--disable-sync",
-        ...(process.env.HEADLESS !== "false" ? ["--headless=new"] : []),
+        ...headlessArgs,
         ...STEALTH_ARGS,
       ],
       viewport: { width: 1440, height: 900 },
@@ -149,7 +158,7 @@ export async function ensureBrowser(name: string): Promise<BrowserContext> {
       state.context = ctx;
       state.launching = null;
       resetIdleTimer(state);
-      console.log(`[profiles] Browser launched for ${name} (stealth enabled)`);
+      console.log(`[profiles] Browser launched for ${name} (${useHeaded ? "headed" : "headless"}, stealth enabled)`);
       return ctx;
     })
     .catch((err) => {
