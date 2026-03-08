@@ -1,5 +1,6 @@
 import asyncio
 import json
+import re
 import uuid
 import logging
 import hashlib
@@ -41,13 +42,14 @@ async def create_search(
 ):
     """Run the full CarFINDa pipeline:
     1. Parse natural language → structured filters (LLM intake)
-    2. Check DB cache for recent identical search
-    3. Scrape marketplaces (CarMax, Cars.com)
-    4. Persist listings to DB
-    5. Score every listing (NHTSA, EPA, market value)
-    6. Persist scores to DB
-    7. Synthesize personalized recommendations (LLM)
-    8. Return ranked results with explanations
+    2. Query listings table with filters (DB-first; skip scrape if enough results)
+    3. Check DB cache for recent identical search
+    4. Scrape marketplaces (CarMax, Cars.com)
+    5. Persist listings to DB
+    6. Score every listing (NHTSA, EPA, market value)
+    7. Persist scores to DB
+    8. Synthesize personalized recommendations (LLM)
+    9. Return ranked results with explanations
     """
     import time as _time
     _t0 = _time.monotonic()
@@ -111,7 +113,27 @@ async def create_search(
                 detail="Could not extract any search criteria. Try something like: 'SUV under $20K near Denver'",
             )
 
-    # ── Step 2: Check DB cache ──
+    # ── Step 2: Query listings table first (DB-first) ──
+    MIN_DB_RESULTS = 10
+    if db:
+        try:
+            db_results = await db.search_listings(filters, limit=100)
+            if len(db_results) >= MIN_DB_RESULTS:
+                logger.info(
+                    "Returning %d results from listings table (skipping scrape)",
+                    len(db_results),
+                )
+                synthesis = await _run_synthesis(
+                    db_results,
+                    request.natural_language or _describe_filters(filters),
+                    nl_preferences or filters,
+                    settings,
+                )
+                return _build_response(str(uuid.uuid4()), db_results, synthesis)
+        except Exception as exc:
+            logger.warning("DB listing search failed, proceeding with scrape: %s", exc)
+
+    # ── Step 3: Check DB cache (identical search in last 60 min) ──
     if db:
         try:
             cached_session_id = await db.find_cached_search(filters, max_age_minutes=60)
@@ -129,12 +151,13 @@ async def create_search(
         except Exception as exc:
             logger.warning("Cache lookup failed, proceeding with fresh scrape: %s", exc)
 
-    # ── Step 3: Create search session & scrape ──
+    # ── Step 4: Create search session & scrape ──
     session_id = str(uuid.uuid4())
+    db_user_id: Optional[str] = _valid_user_id_for_db(user_id)
     if db:
         try:
             session_id = await db.create_search_session(
-                user_id, request.natural_language or "", filters,
+                db_user_id, request.natural_language or "", filters,
             )
         except Exception as exc:
             logger.warning("Failed to create search session: %s", exc)
@@ -157,23 +180,22 @@ async def create_search(
             total_results=0,
         )
 
-    # ── Step 4: Persist listings to DB + score in parallel ──
+    # ── Step 5: Persist listings to DB ──
     id_map: dict[str, str] = {}
     persisted_ids: set[str] = set()
     if db:
         try:
-            id_map = await db.upsert_listings(raw_listings)
+            id_map, persisted_ids = await db.upsert_listings(raw_listings)
             for listing in raw_listings:
                 old_id = listing["id"]
                 if old_id in id_map:
                     listing["id"] = id_map[old_id]
-                    persisted_ids.add(listing["id"])
             # Batch price history (fire-and-forget, don't block)
             asyncio.create_task(_record_prices_batch(db, raw_listings, persisted_ids))
         except Exception as exc:
             logger.warning("Failed to persist listings: %s", exc)
 
-    # ── Step 5: Score + synthesize in parallel ──
+    # ── Step 6: Score + synthesize in parallel ──
     scored_listings = await score_listings(raw_listings)
     logger.info("Scoring pipeline scored %d listings", len(scored_listings))
 
@@ -191,7 +213,7 @@ async def create_search(
     _t3 = _time.monotonic()
     logger.info("Search complete in %.1fs total (scrape: %.1fs, score+synth: %.1fs)", _t3 - _t0, _t2 - _t1, _t3 - _t2)
 
-    # ── Step 6: Build and return response ──
+    # ── Step 7: Build and return response ──
     response = _build_response(session_id, scored_listings, synthesis)
     _SEARCH_CACHE[cache_key] = (response, _time.monotonic())
     return response
@@ -226,7 +248,7 @@ async def _record_prices_batch(db: Any, listings: list[dict], persisted_ids: set
         for listing in listings:
             lid = listing["id"]
             if lid in persisted_ids and listing.get("price") and listing["price"] > 0:
-                tasks.append(db.record_price_changes(lid, listing["price"], listing.get("source_name", "")))
+                tasks.append(db.record_price_changes(lid, listing["price"], listing.get("source_name", ""), valid_listing_ids=persisted_ids))
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
     except Exception as exc:
@@ -366,6 +388,18 @@ async def get_search_status(
         )
 
     return _build_response(session_id, cached_results)
+
+
+def _valid_user_id_for_db(user_id: str) -> Optional[str]:
+    """Return user_id if it's a valid UUID (exists in auth.users), else None for anonymous."""
+    if not user_id:
+        return None
+    # Dev/anonymous IDs like "dev-user-001" or "anon" are not valid UUIDs
+    uuid_pattern = re.compile(
+        r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+        re.IGNORECASE,
+    )
+    return user_id if uuid_pattern.match(user_id) else None
 
 
 def _build_filters(request: SearchRequest) -> dict:

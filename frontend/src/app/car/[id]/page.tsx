@@ -8,6 +8,7 @@ import { ChatBubble } from '@/components/chat/ChatBubble';
 import { ScoreBadge } from '@/components/ui/ScoreBadge';
 import { ScoreBreakdown } from '@/components/ui/ScoreBreakdown';
 import { EmailAlertPanel } from '@/components/ui/EmailAlertPanel';
+import { BookmarkButton } from '@/components/ui/BookmarkButton';
 import { Car, NegotiationStrategy } from '@/lib/types';
 
 function NegotiationPanel({ car }: { car: Car }) {
@@ -370,7 +371,8 @@ function DetailContent({ id }: { id: string }) {
               </svg>
             </div>
           )}
-          <div className="absolute top-4 right-4">
+          <div className="absolute top-4 right-4 flex items-center gap-2">
+            <BookmarkButton car={car} size="md" className="!p-2 bg-white/90 rounded-full shadow-sm" />
             <ScoreBadge score={car.score} size="lg" />
           </div>
           {car.headline && (

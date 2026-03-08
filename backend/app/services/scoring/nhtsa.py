@@ -7,7 +7,8 @@ via the free public NHTSA APIs.
 
 import asyncio
 import time
-from typing import Any
+from typing import Any, Optional
+from urllib.parse import quote
 
 import httpx
 
@@ -24,7 +25,7 @@ _TTL_RECALLS = 1800     # 30 min — recalls can be issued at any time
 _TTL_VIN = 86400        # 24 hours — VIN decode data never changes
 
 
-def _cache_get(key: str) -> Any | None:
+def _cache_get(key: str) -> Optional[Any]:
     """Return cached value if it exists and has not expired."""
     entry = _cache.get(key)
     if entry is None:
@@ -127,7 +128,7 @@ async def get_safety_ratings(make: str, model: str, year: int) -> dict:
                 variants.append(r)
 
         # Pick the best available overall rating across variants
-        def _safe_int(val: Any) -> int | None:
+        def _safe_int(val: Any) -> Optional[int]:
             if val is None or val == "" or val == "Not Rated":
                 return None
             try:
@@ -135,10 +136,10 @@ async def get_safety_ratings(make: str, model: str, year: int) -> dict:
             except (ValueError, TypeError):
                 return None
 
-        overall: int | None = None
-        front: int | None = None
-        side: int | None = None
-        rollover: int | None = None
+        overall: Optional[int] = None
+        front: Optional[int] = None
+        side: Optional[int] = None
+        rollover: Optional[int] = None
 
         for v in variants:
             o = _safe_int(v.get("OverallRating"))
@@ -177,9 +178,19 @@ async def get_safety_ratings(make: str, model: str, year: int) -> dict:
 # Complaints
 # ---------------------------------------------------------------------------
 
+def _sanitize_for_path(s: str) -> str:
+    """Clean and encode a string for use in URL path segments."""
+    if not s or not isinstance(s, str):
+        return ""
+    return quote(s.strip().replace("/", " "), safe="")
+
+
 async def get_complaints(make: str, model: str, year: int) -> dict:
     """
     Fetch NHTSA consumer complaints for a vehicle.
+
+    Uses path-based ODI Complaints API:
+    /Complaints/vehicle/modelyear/{YEAR}/make/{MAKE}/model/{MODEL}
 
     Returns a dict with:
         complaint_count (int),
@@ -191,11 +202,12 @@ async def get_complaints(make: str, model: str, year: int) -> dict:
     if cached is not None:
         return cached
 
+    make_enc = _sanitize_for_path(make)
+    model_enc = _sanitize_for_path(model)
+    # Both endpoints return 403 for programmatic access; single attempt
     url = (
-        "https://api.nhtsa.gov/complaints/complaintsByVehicle"
-        f"?make={make}&model={model}&modelYear={year}"
+        f"https://api.nhtsa.gov/complaints/vehicle/modelyear/{year}/make/{make_enc}/model/{model_enc}"
     )
-
     try:
         await _polite_delay()
         async with _client() as client:
@@ -203,13 +215,13 @@ async def get_complaints(make: str, model: str, year: int) -> dict:
             resp.raise_for_status()
             data = resp.json()
 
-        results = data.get("results", [])
+        results = data.get("results", data.get("Results", []))
         complaint_count = len(results)
 
         # Tally complaints by component
         component_counts: dict[str, int] = {}
         for item in results:
-            components = item.get("components", "Unknown")
+            components = item.get("components") or item.get("Component", "Unknown")
             if components:
                 for comp in components.split(","):
                     comp = comp.strip()
@@ -230,11 +242,11 @@ async def get_complaints(make: str, model: str, year: int) -> dict:
         _cache_set(cache_key, result, _TTL_COMPLAINTS)
         return result
 
-    except (httpx.HTTPStatusError, httpx.RequestError, Exception) as exc:
+    except (httpx.HTTPStatusError, httpx.RequestError, Exception):
         return {
             "complaint_count": 0,
             "top_categories": [],
-            "error": str(exc),
+            "error": "Complaints API returned 403 (blocked) or unreachable",
         }
 
 
@@ -251,8 +263,12 @@ async def get_recalls(
     """
     Fetch NHTSA recall information for a vehicle.
 
-    Prefers VIN-based lookup if a VIN is provided, falling back to
-    make/model/year lookup.
+    Uses VPIC path-based RecallsByVehicle endpoint:
+    https://vpic.nhtsa.dot.gov/api/RecallsByVehicle/{make}/{model}/{year}
+
+    When only VIN is provided, decodes VIN first to get make/model/year.
+    The query-param recallsByVehicle?vin= endpoint returns 400, so we use
+    make/model/year path exclusively.
 
     Returns a dict with:
         recall_count (int),
@@ -264,60 +280,93 @@ async def get_recalls(
     if cached is not None:
         return cached
 
-    urls_to_try: list[str] = []
-    if vin:
-        urls_to_try.append(
-            f"https://api.nhtsa.gov/recalls/recallsByVehicle?vin={vin}"
-        )
-    if make and model and year:
-        urls_to_try.append(
-            "https://api.nhtsa.gov/recalls/recallsByVehicle"
-            f"?make={make}&model={model}&modelYear={year}"
-        )
+    # Resolve make/model/year: use direct params or decode from VIN
+    resolved_make, resolved_model, resolved_year = make, model, year
+    if (not make or not model or not year) and vin and len(vin) == 17:
+        decoded = await decode_vin(vin)
+        if not decoded.get("error"):
+            resolved_make = decoded.get("make", "")
+            resolved_model = decoded.get("model", "")
+            resolved_year = decoded.get("year", 0) or year
 
-    if not urls_to_try:
+    if not resolved_make or not resolved_model or not resolved_year:
         return {
             "recall_count": 0,
             "recalls": [],
-            "error": "No VIN or make/model/year provided",
+            "error": "No make/model/year (or valid VIN to decode) provided",
         }
 
-    for url in urls_to_try:
+    make_enc = _sanitize_for_path(resolved_make).lower() or "unknown"
+    model_clean = resolved_model.strip()
+    # VPIC often returns 404 for trim-specific models (e.g. "Camry SE").
+    # Try base model first: "Camry SE" -> "Camry", "Sierra 1500 Denali" -> "Sierra 1500"
+    def _base_model(m: str) -> str:
+        parts = m.split()
+        if not parts:
+            return m
+        if len(parts) >= 2 and parts[1].replace("-", "").isdigit():
+            return " ".join(parts[:2])  # "Sierra 1500", "Model 3", "4Runner"
+        return parts[0]
+
+    # Try base model first (VPIC often 404s on trim-specific like "Camry SE")
+    model_variants = [_base_model(model_clean), model_clean]
+    model_variants = list(dict.fromkeys(model_variants))  # dedupe
+
+    for model_try in model_variants:
+        model_enc = _sanitize_for_path(model_try).lower() or "unknown"
+        url = (
+            "https://vpic.nhtsa.dot.gov/api/RecallsByVehicle"
+            f"/{make_enc}/{model_enc}/{resolved_year}?format=json"
+        )
         try:
             await _polite_delay()
             async with _client() as client:
                 resp = await client.get(url)
+                if resp.status_code == 404:
+                    continue
                 resp.raise_for_status()
                 data = resp.json()
-
-            results = data.get("results", [])
-
-            recalls_list = []
-            for r in results:
-                recalls_list.append({
-                    "nhtsa_campaign_number": r.get("NHTSACampaignNumber", ""),
-                    "component": r.get("Component", ""),
-                    "summary": r.get("Summary", ""),
-                    "consequence": r.get("Consequence", ""),
-                    "remedy": r.get("Remedy", ""),
-                    "report_date": r.get("ReportReceivedDate", ""),
-                })
-
-            result = {
-                "recall_count": len(recalls_list),
-                "recalls": recalls_list,
-            }
-            _cache_set(cache_key, result, _TTL_RECALLS)
-            return result
-
+                break
         except (httpx.HTTPStatusError, httpx.RequestError):
-            continue  # try next URL
+            continue
+    else:
+        return {
+            "recall_count": 0,
+            "recalls": [],
+            "error": f"RecallsByVehicle 404 for {make}/{model}/{year}",
+        }
 
-    return {
-        "recall_count": 0,
-        "recalls": [],
-        "error": "All recall lookup attempts failed",
-    }
+    try:
+        results = data.get("Results", data.get("results", []))
+
+        recalls_list = []
+        for r in results:
+            recalls_list.append({
+                "nhtsa_campaign_number": (
+                    r.get("NHTSACampaignNumber") or r.get("nhtsa_campaign_number", "")
+                ),
+                "component": r.get("Component") or r.get("component", ""),
+                "summary": r.get("Summary") or r.get("summary", ""),
+                "consequence": r.get("Consequence") or r.get("consequence", ""),
+                "remedy": r.get("Remedy") or r.get("remedy", ""),
+                "report_date": (
+                    r.get("ReportReceivedDate") or r.get("report_received_date", "")
+                ),
+            })
+
+        result = {
+            "recall_count": len(recalls_list),
+            "recalls": recalls_list,
+        }
+        _cache_set(cache_key, result, _TTL_RECALLS)
+        return result
+
+    except (httpx.HTTPStatusError, httpx.RequestError, Exception) as exc:
+        return {
+            "recall_count": 0,
+            "recalls": [],
+            "error": str(exc),
+        }
 
 
 # ---------------------------------------------------------------------------

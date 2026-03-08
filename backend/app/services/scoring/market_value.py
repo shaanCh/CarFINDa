@@ -10,7 +10,7 @@ Priority chain:
 import re
 import time
 from datetime import datetime
-from typing import Any
+from typing import Any, Optional
 
 import httpx
 
@@ -24,7 +24,7 @@ _cache: dict[str, tuple[float, Any]] = {}
 _TTL_VALUE = 3600  # 1 hour
 
 
-def _cache_get(key: str) -> Any | None:
+def _cache_get(key: str) -> Optional[Any]:
     entry = _cache.get(key)
     if entry is None:
         return None
@@ -134,7 +134,7 @@ async def _vinaudit_lookup(
     trim: str,
     vin: str,
     api_key: str,
-) -> dict | None:
+) -> Optional[dict]:
     """Query VinAudit for market value. Tries VIN first, then year/make/model/trim."""
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(5.0)) as client:
@@ -174,7 +174,7 @@ async def _vinaudit_request(
     client: httpx.AsyncClient,
     url: str,
     params: dict,
-) -> dict | None:
+) -> Optional[dict]:
     """Make a single VinAudit API request and parse the response."""
     resp = await client.get(url, params=params)
     resp.raise_for_status()
@@ -229,7 +229,7 @@ async def _tavily_lookup(
     mileage: int,
     trim: str,
     api_key: str,
-) -> dict | None:
+) -> Optional[dict]:
     """Search Tavily for market value info and try to extract a price range."""
     trim_str = f" {trim}" if trim else ""
     query = f"{year} {make} {model}{trim_str} KBB fair market value"

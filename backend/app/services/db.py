@@ -42,18 +42,20 @@ class ListingDB:
     # Listings
     # ------------------------------------------------------------------
 
-    async def upsert_listings(self, listings: list[dict]) -> dict[str, str]:
+    async def upsert_listings(self, listings: list[dict]) -> tuple[dict[str, str], set[str]]:
         """Upsert scraped listings into the DB.
 
         Listings with a VIN are upserted (dedup on VIN).
         Listings without a VIN are inserted as new rows.
 
-        Returns a mapping of scraper_id -> db_id so callers can
-        remap IDs to the stable DB primary keys.
+        Returns (id_map, valid_ids) where:
+          - id_map: scraper_id -> db_id for remapping
+          - valid_ids: set of listing IDs that exist in DB (for FK-safe downstream writes)
         """
         id_map: dict[str, str] = {}
+        valid_ids: set[str] = set()
         if not listings:
-            return id_map
+            return id_map, valid_ids
 
         with_vin = [l for l in listings if l.get("vin")]
         without_vin = [l for l in listings if not l.get("vin")]
@@ -78,9 +80,11 @@ class ListingDB:
                 resp.raise_for_status()
                 db_rows = resp.json()
                 for orig, db_row in zip(batch, db_rows):
-                    id_map[orig["id"]] = db_row["id"]
+                    db_id = db_row["id"]
+                    id_map[orig["id"]] = db_id
+                    valid_ids.add(db_id)
             except Exception as exc:
-                logger.error("Failed to upsert VIN listings batch: %s", exc)
+                _log_httpx_error(exc, "upsert VIN listings")
                 for l in batch:
                     id_map[l["id"]] = l["id"]
 
@@ -96,17 +100,19 @@ class ListingDB:
                 resp.raise_for_status()
                 db_rows = resp.json()
                 for orig, db_row in zip(batch, db_rows):
-                    id_map[orig["id"]] = db_row["id"]
+                    db_id = db_row["id"]
+                    id_map[orig["id"]] = db_id
+                    valid_ids.add(db_id)
             except Exception as exc:
-                logger.error("Failed to insert non-VIN listings batch: %s", exc)
+                _log_httpx_error(exc, "insert non-VIN listings")
                 for l in batch:
                     id_map[l["id"]] = l["id"]
 
         logger.info(
-            "Upserted %d listings (%d with VIN, %d without)",
-            len(id_map), len(with_vin), len(without_vin),
+            "Upserted %d listings (%d valid in DB, %d with VIN, %d without)",
+            len(id_map), len(valid_ids), len(with_vin), len(without_vin),
         )
-        return id_map
+        return id_map, valid_ids
 
     async def get_listing(self, listing_id: str) -> Optional[dict]:
         """Fetch a single listing + score from the DB."""
@@ -140,13 +146,24 @@ class ListingDB:
     # Scores
     # ------------------------------------------------------------------
 
-    async def upsert_scores(self, scores: list[dict]) -> None:
-        """Bulk upsert listing scores."""
+    async def upsert_scores(
+        self, scores: list[dict],
+        *,
+        valid_listing_ids: Optional[set[str]] = None,
+    ) -> None:
+        """Bulk upsert listing scores.
+
+        valid_listing_ids: if provided, only upsert scores for listings that exist (avoids FK 409).
+        """
         if not scores:
             return
 
-        for i in range(0, len(scores), _BATCH_SIZE):
-            batch = scores[i : i + _BATCH_SIZE]
+        to_upsert = scores
+        if valid_listing_ids is not None:
+            to_upsert = [s for s in scores if s.get("listing_id") in valid_listing_ids]
+
+        for i in range(0, len(to_upsert), _BATCH_SIZE):
+            batch = to_upsert[i : i + _BATCH_SIZE]
             try:
                 resp = await self._client.post(
                     f"{self._rest_url}/listing_scores",
@@ -199,23 +216,30 @@ class ListingDB:
     # ------------------------------------------------------------------
 
     async def create_search_session(
-        self, user_id: str, query_text: str, parsed_filters: dict,
+        self, user_id: Optional[str], query_text: str, parsed_filters: dict,
     ) -> str:
-        """Create a new search session and return its ID."""
-        # user_id must exist in the users table (FK constraint).
-        # For anonymous/dev users, skip session creation entirely.
-        if not _is_valid_uuid(user_id):
+        """Create a new search session and return its ID.
+
+        user_id: UUID from auth.users, or None for anonymous/dev.
+        Skips session creation for non-UUID user_id (FK constraint).
+        """
+        session_id = str(uuid.uuid4())
+        if user_id is not None and not _is_valid_uuid(user_id):
             logger.debug("Skipping search session for non-UUID user: %s", user_id)
-            return str(uuid.uuid4())
+            return session_id
+        payload: dict = {
+            "id": session_id,
+            "query_text": query_text,
+            "parsed_filters": parsed_filters,
+            "status": "scraping",
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }
+        if user_id:
+            payload["user_id"] = user_id
         try:
             resp = await self._client.post(
                 f"{self._rest_url}/search_sessions",
-                json={
-                    "user_id": user_id,
-                    "query_text": query_text,
-                    "parsed_filters": parsed_filters,
-                    "status": "scraping",
-                },
+                json=payload,
                 headers={
                     **self._headers,
                     "Prefer": "return=representation",
@@ -232,7 +256,7 @@ class ListingDB:
                 return rows[0]["id"]
         except Exception as exc:
             logger.error("Failed to create search session: %s", exc)
-        return str(uuid.uuid4())
+        return session_id
 
     async def complete_search_session(
         self, session_id: str, results_count: int,
@@ -254,22 +278,24 @@ class ListingDB:
 
     async def link_search_listings(
         self, search_id: str, listing_ids: list[str],
+        *,
+        valid_listing_ids: Optional[set[str]] = None,
     ) -> None:
-        """Link listings to a search session via junction table."""
+        """Link listings to a search session via junction table.
+
+        valid_listing_ids: if provided, only link IDs that exist in listings (avoids FK 409).
+        Deduplicates listing_ids and uses upsert to avoid duplicate-key 409.
+        """
         if not listing_ids:
             return
 
-        # Deduplicate listing IDs (same listing can appear from multiple sources)
-        seen: set[str] = set()
-        unique_ids: list[str] = []
-        for lid in listing_ids:
-            if lid not in seen:
-                seen.add(lid)
-                unique_ids.append(lid)
+        ids_to_link = list(dict.fromkeys(listing_ids))
+        if valid_listing_ids is not None:
+            ids_to_link = [lid for lid in ids_to_link if lid in valid_listing_ids]
 
         rows = [
             {"search_id": search_id, "listing_id": lid, "rank": rank}
-            for rank, lid in enumerate(unique_ids, 1)
+            for rank, lid in enumerate(ids_to_link, 1)
         ]
         for i in range(0, len(rows), _BATCH_SIZE):
             batch = rows[i : i + _BATCH_SIZE]
@@ -277,12 +303,97 @@ class ListingDB:
                 resp = await self._client.post(
                     f"{self._rest_url}/search_listings",
                     json=batch,
-                    headers={**self._headers, "Prefer": "return=minimal"},
+                    headers={
+                        **self._headers,
+                        "Prefer": "return=minimal,resolution=merge-duplicates",
+                    },
                 )
                 resp.raise_for_status()
             except Exception as exc:
                 # 409 = duplicate key (expected on re-scrape), not critical
                 logger.debug("Link search listings batch: %s", exc)
+
+    # ------------------------------------------------------------------
+    # Direct listing search (filter-based query)
+    # ------------------------------------------------------------------
+
+    async def search_listings(
+        self,
+        filters: dict[str, Any],
+        *,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        """Query listings table with filters. Uses search_listings_filtered RPC.
+
+        Returns list of dicts with listing fields + nested 'score' dict,
+        compatible with _build_response in the search route.
+        """
+        try:
+            body: dict[str, Any] = {"p_limit": limit}
+            if filters.get("makes"):
+                body["p_makes"] = [m.strip() for m in filters["makes"] if m]
+            if filters.get("models"):
+                body["p_models"] = [m.strip() for m in filters["models"] if m]
+            if filters.get("budget_min") is not None:
+                body["p_budget_min"] = float(filters["budget_min"])
+            if filters.get("budget_max") is not None:
+                body["p_budget_max"] = float(filters["budget_max"])
+            if filters.get("min_year") is not None:
+                body["p_min_year"] = int(filters["min_year"])
+            if filters.get("max_mileage") is not None:
+                body["p_max_mileage"] = int(filters["max_mileage"])
+            if filters.get("location"):
+                body["p_location"] = str(filters["location"]).strip()
+
+            resp = await self._client.post(
+                f"{self._rest_url}/rpc/search_listings_filtered",
+                json=body,
+            )
+            if not resp.is_success:
+                _log_httpx_response(resp, "search_listings_filtered")
+            resp.raise_for_status()
+            rows = resp.json()
+            if not rows:
+                return []
+
+            # Convert flat RPC output to {listing fields} + {score} format
+            results = []
+            for r in rows:
+                score = {
+                    "safety_score": r.get("safety_score") or 0,
+                    "reliability_score": r.get("reliability_score") or 0,
+                    "value_score": r.get("value_score") or 0,
+                    "efficiency_score": r.get("efficiency_score") or 0,
+                    "recall_score": r.get("recall_penalty") or 0,
+                    "composite_score": r.get("composite_score") or 0,
+                    "breakdown": r.get("breakdown") or {},
+                }
+                listing = {
+                    "id": r.get("id"),
+                    "vin": r.get("vin"),
+                    "year": r.get("year") or 0,
+                    "make": r.get("make") or "Unknown",
+                    "model": r.get("model") or "Unknown",
+                    "trim": r.get("trim"),
+                    "title": r.get("title"),
+                    "price": r.get("price") or 0.0,
+                    "mileage": r.get("mileage"),
+                    "location": r.get("location"),
+                    "source_url": r.get("source_url"),
+                    "source_name": r.get("source_name") or "database",
+                    "image_urls": r.get("image_urls") or [],
+                    "exterior_color": r.get("exterior_color"),
+                    "interior_color": r.get("interior_color"),
+                    "fuel_type": r.get("fuel_type"),
+                    "motor_type": r.get("motor_type"),
+                    "transmission": r.get("transmission"),
+                    "drivetrain": r.get("drivetrain"),
+                }
+                results.append({**listing, "score": score})
+            return results
+        except Exception as exc:
+            logger.error("search_listings failed: %s", exc, exc_info=True)
+            return []
 
     # ------------------------------------------------------------------
     # Cache lookup
@@ -385,13 +496,17 @@ class ListingDB:
 
     async def record_price_changes(
         self, listing_id: str, price: float, source_name: str,
+        *,
+        valid_listing_ids: Optional[set[str]] = None,
     ) -> None:
         """Record a price observation in the price_history table.
 
-        Only call this for listings that have been successfully upserted
-        into the listings table (FK constraint: listing_id -> listings.id).
+        Only call for listings successfully upserted to listings (FK constraint).
+        valid_listing_ids: if provided, only record when listing_id exists (avoids FK 409).
         """
         if not price or price <= 0:
+            return
+        if valid_listing_ids is not None and listing_id not in valid_listing_ids:
             return
         try:
             resp = await self._client.post(
@@ -504,41 +619,56 @@ def _is_valid_uuid(val: str) -> bool:
         return False
 
 
-def _listing_to_row(listing: dict) -> dict:
-    """Map a scraper output dict to a DB listings row."""
-    now = datetime.now(timezone.utc).isoformat()
-    sources = listing.get("sources") or []
-    if not sources and listing.get("source_name"):
-        sources = [{
-            "name": listing.get("source_name"),
-            "url": listing.get("source_url"),
-            "price": listing.get("price"),
-        }]
+def _log_httpx_error(exc: Exception, context: str) -> None:
+    """Log httpx errors with response body when available."""
+    if hasattr(exc, "response") and exc.response is not None:
+        _log_httpx_response(exc.response, context)
+    else:
+        logger.error("Failed to %s: %s", context, exc)
 
-    # DB id column is UUID; generate one if the scraper ID isn't a valid UUID
+
+def _log_httpx_response(resp: "httpx.Response", context: str) -> None:
+    """Log HTTP response body for debugging 4xx/5xx."""
+    try:
+        body = resp.text
+        if len(body) > 500:
+            body = body[:500] + "..."
+        logger.error(
+            "Failed to %s: %d %s — %s",
+            context, resp.status_code, resp.reason_phrase, body,
+        )
+    except Exception:
+        logger.error("Failed to %s: %d %s", context, resp.status_code, resp.reason_phrase)
+
+
+def _listing_to_row(listing: dict) -> dict:
+    """Map a scraper output dict to a DB listings row.
+
+    Matches Supabase schema: id, vin, year, make, model, title, price,
+    mileage, location, detail_url, image_url, drivetrain, motor_type, transmission.
+    """
+    imgs = listing.get("image_urls") or []
+    price_val = listing.get("price")
+    mileage_val = listing.get("mileage")
     raw_id = listing.get("id") or ""
     db_id = raw_id if _is_valid_uuid(raw_id) else str(uuid.uuid4())
-
-    return {
+    row = {
         "id": db_id,
         "vin": listing.get("vin") or None,
-        "year": listing.get("year"),
-        "make": listing.get("make"),
-        "model": listing.get("model"),
-        "trim": listing.get("trim"),
-        "price": float(listing["price"]) if listing.get("price") else None,
-        "mileage": listing.get("mileage"),
+        "year": listing.get("year") or 0,
+        "make": listing.get("make") or "Unknown",
+        "model": listing.get("model") or "Unknown",
+        "title": listing.get("title") or (f"{listing.get('year', '')} {listing.get('make', '')} {listing.get('model', '')}".strip() or "Vehicle"),
+        "price": str(int(float(price_val))) if price_val is not None and price_val != "" else None,
+        "mileage": str(int(mileage_val)) if mileage_val is not None and mileage_val != "" else None,
         "location": listing.get("location"),
-        "exterior_color": listing.get("exterior_color"),
-        "interior_color": listing.get("interior_color"),
-        "fuel_type": listing.get("fuel_type"),
-        "transmission": listing.get("transmission"),
+        "detail_url": listing.get("source_url"),
+        "image_url": imgs[0] if imgs else None,
         "drivetrain": listing.get("drivetrain"),
-        "body_type": listing.get("body_type") or None,
-        "image_urls": listing.get("image_urls") or [],
-        "sources": json.dumps(sources),
-        "last_seen_at": now,
+        "motor_type": listing.get("fuel_type") or listing.get("motor_type"),
+        "transmission": listing.get("transmission"),
     }
+    return {k: v for k, v in row.items() if v is not None or k in ("id", "vin", "year", "make", "model", "title")}
 
 
 def _db_score_to_dict(score_row: dict) -> dict:
@@ -556,14 +686,21 @@ def _db_score_to_dict(score_row: dict) -> dict:
 
 def score_dict_to_row(listing_id: str, score: dict) -> dict:
     """Map a scoring pipeline output dict to a listing_scores DB row."""
+    breakdown = score.get("breakdown") or {}
+    if isinstance(breakdown, str):
+        try:
+            breakdown = json.loads(breakdown) if breakdown else {}
+        except json.JSONDecodeError:
+            breakdown = {}
     return {
-        "listing_id": listing_id,
+        "id": str(uuid.uuid4()),
+        "listing_id": str(listing_id),
         "safety_score": score.get("safety_score", 0),
         "reliability_score": score.get("reliability_score", 0),
         "value_score": score.get("value_score", 0),
         "efficiency_score": score.get("efficiency_score", 0),
         "recall_penalty": score.get("recall_score", 0),
         "composite_score": score.get("composite_score", 0),
-        "breakdown": json.dumps(score.get("breakdown", {})),
+        "breakdown": breakdown,  # JSONB: pass dict, not json.dumps string
         "scored_at": datetime.now(timezone.utc).isoformat(),
     }
