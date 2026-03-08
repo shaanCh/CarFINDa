@@ -362,6 +362,7 @@ ENVIRONMENT=development
 ```bash
 # Backend
 cd backend
+create and activate virtual env (optional)
 pip install -r requirements.txt
 uvicorn app.main:app --reload --port 8000
 
