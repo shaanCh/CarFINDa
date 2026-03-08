@@ -82,6 +82,7 @@ class ListingScore(BaseModel):
     reliability: float = 0.0
     value: float = 0.0
     efficiency: float = 0.0
+    ownership_cost: float = 0.0
     recall_penalty: float = 0.0
     composite: float = 0.0
     breakdown: dict = {}

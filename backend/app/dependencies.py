@@ -1,7 +1,7 @@
 import logging
-
-from fastapi import Depends, HTTPException, Header, status
 from typing import Optional
+
+from fastapi import Depends, HTTPException, Header, Request, status
 
 from app.config import get_settings
 
@@ -84,6 +84,11 @@ async def get_current_user(
 
 async def get_supabase():
     return None
+
+
+async def get_listing_db(request: Request):
+    """Return the ListingDB instance from app state. May be None."""
+    return getattr(request.app.state, "db", None)
 
 
 async def get_db():

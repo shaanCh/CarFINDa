@@ -21,14 +21,20 @@ async def lifespan(app: FastAPI):
     settings = get_settings()
     logger.info("CarFINDa API starting (env=%s)", settings.ENVIRONMENT)
 
-    # TODO: Initialise Supabase client
-    # TODO: Initialise async DB engine / session factory
-    # TODO: Initialise Gemini client
-    # TODO: Warm up any caches
+    # Listing persistence (Supabase PostgREST)
+    db = None
+    if settings.SUPABASE_URL and settings.SUPABASE_SERVICE_ROLE_KEY:
+        from app.services.db import ListingDB
+        db = ListingDB(settings.SUPABASE_URL, settings.SUPABASE_SERVICE_ROLE_KEY)
+        logger.info("ListingDB initialised")
+    else:
+        logger.warning("Supabase not configured — running without persistence")
+    app.state.db = db
 
     yield
 
-    # TODO: Close DB connections, HTTP clients, etc.
+    if db:
+        await db.close()
     logger.info("CarFINDa API shutting down")
 
 
