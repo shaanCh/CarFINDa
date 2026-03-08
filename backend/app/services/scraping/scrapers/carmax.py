@@ -32,7 +32,7 @@ from app.services.scraping.browser_client import BrowserClient
 logger = logging.getLogger(__name__)
 
 # Maximum pages to scrape per search
-MAX_PAGES = 3
+MAX_PAGES = 2
 # CarMax returns up to 24 results per API page
 RESULTS_PER_PAGE = 24
 
@@ -104,6 +104,23 @@ def _extract_zip(location: str) -> str:
 
 _API_URL = "https://www.carmax.com/cars/api/search/run"
 
+# Normalize common model names to their CarMax URL slug format
+_MODEL_SLUG_MAP: dict[str, str] = {
+    "cr-v": "cr-v", "crv": "cr-v", "cr v": "cr-v",
+    "rav4": "rav4",
+    "cx-5": "cx-5", "cx5": "cx-5", "cx 5": "cx-5",
+    "cx-9": "cx-9", "cx9": "cx-9",
+    "hr-v": "hr-v", "hrv": "hr-v",
+    "f-150": "f-150", "f150": "f-150", "f 150": "f-150",
+    "model 3": "model-3", "model y": "model-y",
+    "model s": "model-s", "model x": "model-x",
+    "3 series": "3-series", "5 series": "5-series",
+    "grand cherokee": "grand-cherokee",
+    "santa fe": "santa-fe",
+    "4runner": "4runner",
+    "ram 1500": "1500",
+}
+
 
 class CarMaxScraper:
     """Scraper for carmax.com.
@@ -162,11 +179,16 @@ class CarMaxScraper:
         ``Referer`` header for the API request.
 
         CarMax URL structure:
-          /cars/<make>?year=<min>-<max>&price=<min>-<max>&mileage=0-<max>&location=<zip>&radius=<mi>
+          /cars/<make>/<model>?year=<min>-<max>&price=<min>-<max>&mileage=0-<max>&location=<zip>&radius=<mi>
         """
-        # Base path -- include make if specified
+        # Base path -- include make and model if specified
         makes = filters.get("makes", [])
-        if len(makes) == 1:
+        models = filters.get("models", [])
+        if len(makes) == 1 and len(models) == 1:
+            raw_model = models[0].lower().strip()
+            model_slug = _MODEL_SLUG_MAP.get(raw_model, raw_model.replace(" ", "-"))
+            base_path = f"/cars/{makes[0].lower()}/{model_slug}"
+        elif len(makes) == 1:
             base_path = f"/cars/{makes[0].lower()}"
         else:
             base_path = "/cars"
@@ -224,7 +246,12 @@ class CarMaxScraper:
 
         # The API requires a `uri` param that mirrors the human URL path
         makes = filters.get("makes", [])
-        if len(makes) == 1:
+        models = filters.get("models", [])
+        if len(makes) == 1 and len(models) == 1:
+            raw_model = models[0].lower().strip()
+            model_slug = _MODEL_SLUG_MAP.get(raw_model, raw_model.replace(" ", "-"))
+            params["uri"] = f"/cars/{makes[0].lower()}/{model_slug}"
+        elif len(makes) == 1:
             params["uri"] = f"/cars/{makes[0].lower()}"
         else:
             params["uri"] = "/cars"
@@ -250,9 +277,10 @@ class CarMaxScraper:
             if zipcode:
                 params["location"] = zipcode
 
-        radius = filters.get("radius_miles")
-        if radius:
-            params["radius"] = str(radius)
+        # NOTE: Do NOT pass "radius" as a query param — CarMax API returns
+        # 0 results when radius is present.  The API defaults to nationwide
+        # search, and results are already sorted by proximity when a location
+        # zip is provided.
 
         body_types = filters.get("body_types", [])
         if body_types:
@@ -406,24 +434,28 @@ class CarMaxScraper:
     def _parse_api_item(item: dict[str, Any]) -> dict[str, Any] | None:
         """Convert a single CarMax API vehicle object into a raw listing dict.
 
-        The API response schema is not publicly documented, so we try
-        both camelCase and PascalCase key variants.
+        The API returns camelCase keys like stockNumber, basePrice,
+        heroImageUrl, driveTrain, engineType, etc.
         """
         if not isinstance(item, dict):
             return None
 
-        stock_no = item.get("stockNumber") or item.get("StockNumber") or ""
-        vin = item.get("vin") or item.get("Vin") or ""
+        stock_no = item.get("stockNumber") or ""
+        vin = item.get("vin") or ""
 
-        year = item.get("year") or item.get("Year")
-        make = item.get("make") or item.get("Make") or ""
-        model = item.get("model") or item.get("Model") or ""
-        trim = item.get("trim") or item.get("Trim") or ""
+        year = item.get("year")
+        make = item.get("make") or ""
+        model = item.get("model") or ""
+        trim = item.get("trim") or ""
 
-        price = item.get("price") or item.get("Price") or item.get("basePrice")
-        mileage = item.get("mileage") or item.get("Mileage") or item.get("miles")
+        # Price is under "basePrice" (not "price")
+        price = item.get("basePrice") or item.get("price")
+        mileage = item.get("mileage")
 
-        location_str = item.get("storeName") or item.get("storeCity") or ""
+        # Location: combine city + state
+        store_city = item.get("storeCity") or item.get("storeName") or ""
+        state_abbr = item.get("stateAbbreviation") or ""
+        location_str = f"{store_city}, {state_abbr}" if store_city and state_abbr else store_city
 
         # Build a source URL from stock number or VIN
         if stock_no:
@@ -433,17 +465,21 @@ class CarMaxScraper:
         else:
             source_url = ""
 
-        # Collect image URLs
+        # Hero image
         image_urls: list[str] = []
-        image_url = item.get("imageUrl") or item.get("imagePath") or ""
-        if image_url:
-            image_url = _ensure_absolute_url(image_url)
-            image_urls.append(image_url)
+        hero = item.get("heroImageUrl") or item.get("imageUrl") or item.get("imagePath") or ""
+        if hero:
+            image_urls.append(_ensure_absolute_url(hero))
         if isinstance(item.get("images"), list):
             for img in item["images"]:
                 url = img if isinstance(img, str) else (img.get("url") or img.get("uri") or "")
                 if url:
                     image_urls.append(_ensure_absolute_url(url))
+
+        # MPG
+        mpg_city = item.get("mpgCity")
+        mpg_hwy = item.get("mpgHighway")
+        mpg = f"{mpg_city}/{mpg_hwy} mpg" if mpg_city and mpg_hwy else None
 
         return {
             "vin": vin or None,
@@ -456,12 +492,14 @@ class CarMaxScraper:
             "location": location_str or None,
             "source_url": source_url or None,
             "image_urls": image_urls,
-            "exterior_color": item.get("exteriorColor") or item.get("ExteriorColor") or None,
-            "interior_color": item.get("interiorColor") or item.get("InteriorColor") or None,
-            "fuel_type": item.get("fuelType") or item.get("mpgStyle") or None,
-            "transmission": item.get("transmission") or item.get("Transmission") or None,
-            "drivetrain": item.get("drivetrain") or item.get("driveTrain") or None,
+            "exterior_color": item.get("exteriorColor") or None,
+            "interior_color": item.get("interiorColor") or None,
+            "fuel_type": item.get("engineType") or item.get("fuelType") or None,
+            "motor_type": item.get("engineType") or None,
+            "transmission": item.get("transmission") or None,
+            "drivetrain": item.get("driveTrain") or item.get("drivetrain") or None,
             "deal_rating": None,
+            "mpg": mpg,
         }
 
     # ------------------------------------------------------------------
