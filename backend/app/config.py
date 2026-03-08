@@ -17,7 +17,10 @@ class Settings(BaseSettings):
     TAVILY_API_KEY: str = ""
     VINAUDIT_API_KEY: str = ""
 
-    SIDECAR_URL: str = "http://localhost:3000"
+    FB_EMAIL: str = ""
+    FB_PASSWORD: str = ""
+
+    SIDECAR_URL: str = "http://localhost:3002"
     SIDECAR_TOKEN: str = ""
 
     CAPTCHA_SOLVER_PROVIDER: str = "capsolver"
