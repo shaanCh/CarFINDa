@@ -6,7 +6,7 @@ maintenance, repairs, fees) for a vehicle by VIN.
 """
 
 import time
-from typing import Any
+from typing import Any, Optional
 
 import httpx
 
@@ -20,7 +20,7 @@ _cache: dict[str, tuple[float, Any]] = {}
 _TTL = 3600  # 1 hour
 
 
-def _cache_get(key: str) -> Any | None:
+def _cache_get(key: str) -> Optional[Any]:
     entry = _cache.get(key)
     if entry is None:
         return None

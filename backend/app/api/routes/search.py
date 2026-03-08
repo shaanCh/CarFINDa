@@ -36,13 +36,14 @@ async def create_search(
 ):
     """Run the full CarFINDa pipeline:
     1. Parse natural language → structured filters (LLM intake)
-    2. Check DB cache for recent identical search
-    3. Scrape marketplaces (CarMax, Cars.com)
-    4. Persist listings to DB
-    5. Score every listing (NHTSA, EPA, market value)
-    6. Persist scores to DB
-    7. Synthesize personalized recommendations (LLM)
-    8. Return ranked results with explanations
+    2. Query listings table with filters (DB-first; skip scrape if enough results)
+    3. Check DB cache for recent identical search
+    4. Scrape marketplaces (CarMax, Cars.com)
+    5. Persist listings to DB
+    6. Score every listing (NHTSA, EPA, market value)
+    7. Persist scores to DB
+    8. Synthesize personalized recommendations (LLM)
+    9. Return ranked results with explanations
     """
     settings = get_settings()
     user_id = user.get("user_id", "anon")
@@ -79,7 +80,27 @@ async def create_search(
             detail="Could not extract any search criteria. Try something like: 'SUV under $20K near Denver'",
         )
 
-    # ── Step 2: Check DB cache ──
+    # ── Step 2: Query listings table first (DB-first) ──
+    MIN_DB_RESULTS = 10
+    if db:
+        try:
+            db_results = await db.search_listings(filters, limit=100)
+            if len(db_results) >= MIN_DB_RESULTS:
+                logger.info(
+                    "Returning %d results from listings table (skipping scrape)",
+                    len(db_results),
+                )
+                synthesis = await _run_synthesis(
+                    db_results,
+                    request.natural_language or _describe_filters(filters),
+                    nl_preferences or filters,
+                    settings,
+                )
+                return _build_response(str(uuid.uuid4()), db_results, synthesis)
+        except Exception as exc:
+            logger.warning("DB listing search failed, proceeding with scrape: %s", exc)
+
+    # ── Step 3: Check DB cache (identical search in last 60 min) ──
     if db:
         try:
             cached_session_id = await db.find_cached_search(filters, max_age_minutes=60)
@@ -97,7 +118,7 @@ async def create_search(
         except Exception as exc:
             logger.warning("Cache lookup failed, proceeding with fresh scrape: %s", exc)
 
-    # ── Step 3: Create search session & scrape ──
+    # ── Step 4: Create search session & scrape ──
     session_id = str(uuid.uuid4())
     if db:
         try:
@@ -123,7 +144,7 @@ async def create_search(
             total_results=0,
         )
 
-    # ── Step 4: Persist listings to DB ──
+    # ── Step 5: Persist listings to DB ──
     id_map: dict[str, str] = {}
     if db:
         try:
@@ -147,11 +168,11 @@ async def create_search(
         except Exception as exc:
             logger.warning("Failed to persist listings: %s", exc)
 
-    # ── Step 5: Score every listing ──
+    # ── Step 6: Score every listing ──
     scored_listings = await score_listings(raw_listings)
     logger.info("Scoring pipeline scored %d listings", len(scored_listings))
 
-    # ── Step 6: Persist scores to DB ──
+    # ── Step 7: Persist scores to DB ──
     if db:
         try:
             from app.services.db import score_dict_to_row
@@ -167,7 +188,7 @@ async def create_search(
         except Exception as exc:
             logger.warning("Failed to persist scores: %s", exc)
 
-    # ── Step 7: Link listings to search session ──
+    # ── Step 8: Link listings to search session ──
     if db:
         try:
             listing_ids = [sl.get("id", "") for sl in scored_listings if sl.get("id")]
@@ -176,10 +197,10 @@ async def create_search(
         except Exception as exc:
             logger.warning("Failed to link search results: %s", exc)
 
-    # ── Step 8: Synthesize recommendations ──
+    # ── Step 9: Synthesize recommendations ──
     synthesis = await _run_synthesis(scored_listings, request.natural_language or _describe_filters(filters), nl_preferences or filters, settings)
 
-    # ── Step 9: Build and return response ──
+    # ── Build and return response ──
     return _build_response(session_id, scored_listings, synthesis)
 
 

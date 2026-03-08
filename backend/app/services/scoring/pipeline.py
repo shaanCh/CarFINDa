@@ -156,11 +156,26 @@ async def _score_listings_full(listings: list[dict]) -> list[dict]:
     await asyncio.gather(*[_prefetch(k) for k in unique_configs])
 
     # Phase 2: Per-listing scoring
-    async def _score_one(listing: dict) -> dict:
-        async with semaphore:
-            return await _score_single_full(listing, shared_data)
+    done = 0
+    total = len(listings)
 
-    results = await asyncio.gather(*[_score_one(l) for l in listings], return_exceptions=True)
+    async def _score_one(idx: int, listing: dict) -> dict:
+        nonlocal done
+        async with semaphore:
+            try:
+                out = await _score_single_full(listing, shared_data)
+                done += 1
+                if done % 5 == 0 or done == total:
+                    logger.info("Full-scoring progress: %d/%d listings", done, total)
+                return out
+            except Exception as e:
+                done += 1
+                raise e
+
+    results = await asyncio.gather(
+        *[_score_one(i, l) for i, l in enumerate(listings)],
+        return_exceptions=True,
+    )
 
     scored: list[dict] = []
     for listing, result in zip(listings, results):

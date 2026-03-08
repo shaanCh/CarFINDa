@@ -4,6 +4,7 @@ import React, { useEffect, useState, Suspense } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { TopBar } from '@/components/layout/TopBar';
 import { CarCard } from '@/components/ui/CarCard';
+import { BookmarkButton } from '@/components/ui/BookmarkButton';
 import { SkeletonCard } from '@/components/ui/SkeletonCard';
 import { ScoreBadge } from '@/components/ui/ScoreBadge';
 import { FacebookOutreach } from '@/components/outreach/FacebookOutreach';
@@ -52,7 +53,8 @@ function TopPickCard({ car, rank }: { car: Car; rank: number }) {
         <div className="absolute top-3 left-3 w-7 h-7 rounded-full bg-[var(--blue-dark)] text-white text-xs font-bold flex items-center justify-center">
           {rank}
         </div>
-        <div className="absolute top-3 right-3">
+        <div className="absolute top-3 right-3 flex items-center gap-2">
+          <BookmarkButton car={car} size="sm" />
           <ScoreBadge score={car.score} size="md" />
         </div>
       </div>

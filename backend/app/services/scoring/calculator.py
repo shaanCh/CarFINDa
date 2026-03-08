@@ -8,6 +8,7 @@ a human-readable breakdown.
 
 import math
 from dataclasses import dataclass, field
+from typing import Optional
 
 
 @dataclass
@@ -29,13 +30,13 @@ class ListingScore:
 
 
 def calculate_composite_score(
-    safety_rating: float | None,
+    safety_rating: Optional[float],
     complaint_count: int,
     price: float,
     estimated_value: float,
-    mpg_combined: float | None,
+    mpg_combined: Optional[float],
     open_recalls: int,
-    annual_ownership_cost: float | None = None,
+    annual_ownership_cost: Optional[float] = None,
 ) -> ListingScore:
     """
     Calculate a composite score (0-100) from individual data points.

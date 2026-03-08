@@ -259,6 +259,86 @@ class ListingDB:
                 logger.error("Failed to link search listings: %s", exc)
 
     # ------------------------------------------------------------------
+    # Direct listing search (filter-based query)
+    # ------------------------------------------------------------------
+
+    async def search_listings(
+        self,
+        filters: dict[str, Any],
+        *,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        """Query listings table with filters. Uses search_listings_filtered RPC.
+
+        Returns list of dicts with listing fields + nested 'score' dict,
+        compatible with _build_response in the search route.
+        """
+        try:
+            body: dict[str, Any] = {"p_limit": limit}
+            if filters.get("makes"):
+                body["p_makes"] = [m.strip() for m in filters["makes"] if m]
+            if filters.get("models"):
+                body["p_models"] = [m.strip() for m in filters["models"] if m]
+            if filters.get("budget_min") is not None:
+                body["p_budget_min"] = float(filters["budget_min"])
+            if filters.get("budget_max") is not None:
+                body["p_budget_max"] = float(filters["budget_max"])
+            if filters.get("min_year") is not None:
+                body["p_min_year"] = int(filters["min_year"])
+            if filters.get("max_mileage") is not None:
+                body["p_max_mileage"] = int(filters["max_mileage"])
+            if filters.get("location"):
+                body["p_location"] = str(filters["location"]).strip()
+
+            resp = await self._client.post(
+                f"{self._rest_url}/rpc/search_listings_filtered",
+                json=body,
+            )
+            resp.raise_for_status()
+            rows = resp.json()
+            if not rows:
+                return []
+
+            # Convert flat RPC output to {listing fields} + {score} format
+            results = []
+            for r in rows:
+                score = {
+                    "safety_score": r.get("safety_score") or 0,
+                    "reliability_score": r.get("reliability_score") or 0,
+                    "value_score": r.get("value_score") or 0,
+                    "efficiency_score": r.get("efficiency_score") or 0,
+                    "recall_score": r.get("recall_penalty") or 0,
+                    "composite_score": r.get("composite_score") or 0,
+                    "breakdown": r.get("breakdown") or {},
+                }
+                listing = {
+                    "id": r.get("id"),
+                    "vin": r.get("vin"),
+                    "year": r.get("year") or 0,
+                    "make": r.get("make") or "Unknown",
+                    "model": r.get("model") or "Unknown",
+                    "trim": r.get("trim"),
+                    "title": r.get("title"),
+                    "price": r.get("price") or 0.0,
+                    "mileage": r.get("mileage"),
+                    "location": r.get("location"),
+                    "source_url": r.get("source_url"),
+                    "source_name": r.get("source_name") or "database",
+                    "image_urls": r.get("image_urls") or [],
+                    "exterior_color": r.get("exterior_color"),
+                    "interior_color": r.get("interior_color"),
+                    "fuel_type": r.get("fuel_type"),
+                    "motor_type": r.get("motor_type"),
+                    "transmission": r.get("transmission"),
+                    "drivetrain": r.get("drivetrain"),
+                }
+                results.append({**listing, "score": score})
+            return results
+        except Exception as exc:
+            logger.error("search_listings failed: %s", exc, exc_info=True)
+            return []
+
+    # ------------------------------------------------------------------
     # Cache lookup
     # ------------------------------------------------------------------
 
@@ -440,15 +520,21 @@ def _db_score_to_dict(score_row: dict) -> dict:
 
 def score_dict_to_row(listing_id: str, score: dict) -> dict:
     """Map a scoring pipeline output dict to a listing_scores DB row."""
+    breakdown = score.get("breakdown") or {}
+    if isinstance(breakdown, str):
+        try:
+            breakdown = json.loads(breakdown) if breakdown else {}
+        except json.JSONDecodeError:
+            breakdown = {}
     return {
         "id": str(uuid.uuid4()),
-        "listing_id": listing_id,
+        "listing_id": str(listing_id),
         "safety_score": score.get("safety_score", 0),
         "reliability_score": score.get("reliability_score", 0),
         "value_score": score.get("value_score", 0),
         "efficiency_score": score.get("efficiency_score", 0),
         "recall_penalty": score.get("recall_score", 0),
         "composite_score": score.get("composite_score", 0),
-        "breakdown": json.dumps(score.get("breakdown", {})),
+        "breakdown": breakdown,  # JSONB: pass dict, not json.dumps string
         "scored_at": datetime.now(timezone.utc).isoformat(),
     }

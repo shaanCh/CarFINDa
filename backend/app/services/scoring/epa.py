@@ -5,7 +5,7 @@ Fetches fuel economy (MPG) data from the public fueleconomy.gov REST API.
 """
 
 import time
-from typing import Any
+from typing import Any, Optional
 
 import httpx
 
@@ -17,7 +17,7 @@ _cache: dict[str, tuple[float, Any]] = {}
 _TTL_FUEL = 3600  # 1 hour
 
 
-def _cache_get(key: str) -> Any | None:
+def _cache_get(key: str) -> Optional[Any]:
     entry = _cache.get(key)
     if entry is None:
         return None
@@ -201,7 +201,7 @@ async def get_fuel_economy(make: str, model: str, year: int, trim: str = "") -> 
 
 async def _resolve_epa_model(
     make: str, model: str, year: int, trim: str = "",
-) -> str | None:
+) -> Optional[str]:
     """
     Look up available EPA model names for a make/year and return the best
     match for the given model string.
@@ -253,7 +253,7 @@ async def _resolve_epa_model(
         return None
 
 
-def _best_model_match(query: str, candidates: list[str]) -> str | None:
+def _best_model_match(query: str, candidates: list[str]) -> Optional[str]:
     """
     Find the best EPA model name matching a user-provided model string.
 
@@ -312,7 +312,7 @@ def _empty_result(error: str) -> dict:
     }
 
 
-def _safe_float(val: Any) -> float | None:
+def _safe_float(val: Any) -> Optional[float]:
     if val is None or val == "":
         return None
     try:

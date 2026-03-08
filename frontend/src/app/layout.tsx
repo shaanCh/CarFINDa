@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import Script from "next/script";
 import { Sora, DM_Sans, DM_Mono, Instrument_Serif } from "next/font/google";
 import "./globals.css";
+import { BookmarksProvider } from "@/context/BookmarksContext";
 
 const sora = Sora({ subsets: ["latin"], variable: "--font-sora" });
 const dmSans = DM_Sans({ subsets: ["latin"], variable: "--font-dm-sans" });
@@ -30,7 +31,7 @@ export default function RootLayout({
         )}
       </head>
       <body className={`${dmSans.className} ${sora.variable} ${dmSans.variable} ${dmMono.variable} ${instrumentSerif.variable} antialiased`}>
-        {children}
+        <BookmarksProvider>{children}</BookmarksProvider>
       </body>
     </html>
   );

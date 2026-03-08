@@ -1,6 +1,9 @@
+'use client';
+
 import React from 'react';
 import { Car } from '@/lib/types';
 import { ScoreBadge } from './ScoreBadge';
+import { BookmarkButton } from './BookmarkButton';
 import Link from 'next/link';
 
 interface CarCardProps {
@@ -41,6 +44,9 @@ export function CarCard({ car }: CarCardProps) {
             </svg>
           </div>
         )}
+        <div className="absolute top-3 left-3">
+          <BookmarkButton car={car} size="sm" />
+        </div>
         <div className="absolute top-3 right-3">
           <ScoreBadge score={car.score} size="md" />
         </div>
