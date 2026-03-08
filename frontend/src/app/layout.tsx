@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import Script from "next/script";
 import { Sora, DM_Sans, DM_Mono, Instrument_Serif } from "next/font/google";
+import { NegotiationProvider } from "@/lib/NegotiationContext";
 import "./globals.css";
 
 const sora = Sora({ subsets: ["latin"], variable: "--font-sora" });
@@ -30,7 +31,9 @@ export default function RootLayout({
         )}
       </head>
       <body className={`${dmSans.className} ${sora.variable} ${dmSans.variable} ${dmMono.variable} ${instrumentSerif.variable} antialiased`}>
-        {children}
+        <NegotiationProvider>
+          {children}
+        </NegotiationProvider>
       </body>
     </html>
   );

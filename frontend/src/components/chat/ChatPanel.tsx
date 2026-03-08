@@ -3,26 +3,80 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Car, ChatMessage } from '@/lib/types';
 
-/** Render chat text safely — bold **text** and newlines without dangerouslySetInnerHTML. */
-function ChatContent({ text }: { text: string }) {
-  // Split on **bold** markers
-  const parts = text.split(/(\*\*.*?\*\*)/g);
+/** Render inline markdown: **bold** and *italic* */
+function InlineMarkdown({ text }: { text: string }) {
+  const parts = text.split(/(\*\*.*?\*\*|\*.*?\*)/g);
   return (
-    <div>
+    <>
       {parts.map((part, i) => {
         if (part.startsWith('**') && part.endsWith('**')) {
           return <strong key={i}>{part.slice(2, -2)}</strong>;
         }
-        // Split on newlines to insert <br/>
-        return part.split('\n').map((line, j, arr) => (
-          <React.Fragment key={`${i}-${j}`}>
-            {line}
-            {j < arr.length - 1 && <br />}
-          </React.Fragment>
-        ));
+        if (part.startsWith('*') && part.endsWith('*') && part.length > 2) {
+          return <em key={i}>{part.slice(1, -1)}</em>;
+        }
+        return <React.Fragment key={i}>{part}</React.Fragment>;
       })}
-    </div>
+    </>
   );
+}
+
+/** Render chat text safely — headings, bold, lists, newlines */
+function ChatContent({ text }: { text: string }) {
+  const lines = text.split('\n');
+  const elements: React.ReactNode[] = [];
+  let listItems: string[] = [];
+
+  const flushList = () => {
+    if (listItems.length > 0) {
+      elements.push(
+        <ul key={`ul-${elements.length}`} className="list-disc list-inside my-1 space-y-0.5">
+          {listItems.map((item, i) => (
+            <li key={i}><InlineMarkdown text={item} /></li>
+          ))}
+        </ul>
+      );
+      listItems = [];
+    }
+  };
+
+  lines.forEach((line, i) => {
+    const trimmed = line.trimStart();
+
+    // Headings
+    const headingMatch = trimmed.match(/^(#{1,4})\s+(.*)/);
+    if (headingMatch) {
+      flushList();
+      const level = headingMatch[1].length;
+      const content = headingMatch[2];
+      const cls = level <= 2 ? 'text-sm font-bold mt-3 mb-1' : 'text-sm font-semibold mt-2 mb-0.5';
+      elements.push(
+        <p key={i} className={cls}><InlineMarkdown text={content} /></p>
+      );
+      return;
+    }
+
+    // List items (- or *)
+    const listMatch = trimmed.match(/^[-*]\s+(.*)/);
+    if (listMatch) {
+      listItems.push(listMatch[1]);
+      return;
+    }
+
+    // Regular line
+    flushList();
+    if (trimmed === '') {
+      elements.push(<br key={i} />);
+    } else {
+      elements.push(
+        <span key={i} className="block"><InlineMarkdown text={line} /></span>
+      );
+    }
+  });
+
+  flushList();
+
+  return <div>{elements}</div>;
 }
 
 interface ChatPanelProps {

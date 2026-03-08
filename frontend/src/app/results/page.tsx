@@ -6,6 +6,8 @@ import { TopBar } from '@/components/layout/TopBar';
 import { CarCard } from '@/components/ui/CarCard';
 import { SkeletonCard } from '@/components/ui/SkeletonCard';
 import { ScoreBadge } from '@/components/ui/ScoreBadge';
+import { RadialScore } from '@/components/ui/RadialScore';
+import { ActivityFeed, ActivityResultData } from '@/components/ui/ActivityFeed';
 import { FacebookOutreach } from '@/components/outreach/FacebookOutreach';
 import { Car, Synthesis } from '@/lib/types';
 import Link from 'next/link';
@@ -31,7 +33,7 @@ function TopPickCard({ car, rank }: { car: Car; rank: number }) {
       className="group bg-[var(--bg-primary)] rounded-[var(--radius-card)] overflow-hidden border border-[var(--border)] transition-shadow duration-200 hover:shadow-[0_4px_24px_rgba(0,0,0,0.08)] flex flex-col md:flex-row"
     >
       {/* Image */}
-      <div className="relative w-full md:w-[340px] lg:w-[400px] flex-shrink-0 aspect-[4/3] md:aspect-auto bg-[var(--bg-secondary)] overflow-hidden">
+      <div className="relative w-full md:w-[300px] lg:w-[340px] flex-shrink-0 aspect-[4/3] md:aspect-auto bg-[var(--bg-secondary)] overflow-hidden">
         {car.imageUrl ? (
           /* eslint-disable-next-line @next/next/no-img-element */
           <img
@@ -49,16 +51,26 @@ function TopPickCard({ car, rank }: { car: Car; rank: number }) {
           </div>
         )}
         {/* Rank badge */}
-        <div className="absolute top-3 left-3 w-7 h-7 rounded-full bg-[var(--blue-dark)] text-white text-xs font-bold flex items-center justify-center">
+        <div
+          className="absolute top-3 left-3 w-7 h-7 rounded-full text-white text-xs font-semibold flex items-center justify-center"
+          style={{
+            background: 'rgba(0,0,0,0.45)',
+            backdropFilter: 'blur(12px)',
+            WebkitBackdropFilter: 'blur(12px)',
+            border: '1px solid rgba(255,255,255,0.15)',
+            fontFamily: 'var(--font-serif, Georgia, serif)',
+            textShadow: '0 1px 3px rgba(0,0,0,0.5)',
+          }}
+        >
           {rank}
         </div>
         <div className="absolute top-3 right-3">
-          <ScoreBadge score={car.score} size="md" />
+          <ScoreBadge score={car.score} size="lg" />
         </div>
       </div>
 
       {/* Content */}
-      <div className="flex-1 p-5 md:p-6 flex flex-col min-w-0">
+      <div className="flex-1 p-6 md:p-8 flex flex-col min-w-0">
         {/* Headline from LLM */}
         {car.headline && (
           <p className="text-xs font-semibold uppercase tracking-wider text-[var(--accent-orange)] mb-2">
@@ -66,23 +78,38 @@ function TopPickCard({ car, rank }: { car: Car; rank: number }) {
           </p>
         )}
 
-        <h3 className="text-lg font-semibold text-[var(--text-primary)] mb-1 leading-snug" style={{ fontFamily: 'var(--font-serif)' }}>
+        <h3 className="text-3xl font-bold text-[var(--text-primary)] mb-1.5 leading-snug" style={{ fontFamily: 'var(--font-serif)' }}>
           {car.year} {car.make} {car.model} {car.trim || ''}
         </h3>
 
         <div className="flex items-baseline gap-3 mb-1">
-          <span className="text-xl font-bold text-[var(--text-primary)]">{price}</span>
+          <span className="text-2xl font-bold text-[var(--text-primary)]">{price}</span>
           {miles && <span className="text-sm text-[var(--text-secondary)]">{miles}</span>}
+          {car.marketAvgPrice && car.price < car.marketAvgPrice && (
+            <span className="text-xs font-semibold text-green-700 bg-green-50 px-2 py-0.5 rounded-full">
+              {Math.round(((car.marketAvgPrice - car.price) / car.marketAvgPrice) * 100)}% below market
+            </span>
+          )}
         </div>
 
-        <p className="text-xs text-[var(--text-secondary)] mb-3">
+        <p className="text-xs text-[var(--text-secondary)] mb-4">
           {car.source_name || 'Dealer'}
           {car.location && <> &middot; {car.location}</>}
         </p>
 
-        {/* LLM explanation */}
+        {/* Score breakdown rings */}
+        {car.scoreBreakdown && (
+          <div className="flex gap-4 mb-4">
+            <RadialScore value={car.scoreBreakdown.safety} label="Safety" size={56} />
+            <RadialScore value={car.scoreBreakdown.reliability} label="Reliability" size={56} />
+            <RadialScore value={car.scoreBreakdown.value} label="Value" size={56} />
+            <RadialScore value={car.scoreBreakdown.efficiency} label="Efficiency" size={56} />
+          </div>
+        )}
+
+        {/* LLM explanation — truncated */}
         {car.explanation && (
-          <p className="text-sm text-[var(--text-secondary)] leading-relaxed mb-3">
+          <p className="text-sm text-[var(--text-secondary)] leading-relaxed mb-3 line-clamp-2">
             {car.explanation}
           </p>
         )}
@@ -90,12 +117,12 @@ function TopPickCard({ car, rank }: { car: Car; rank: number }) {
         {/* Strengths & Concerns */}
         {(car.strengths?.length || car.concerns?.length) ? (
           <div className="flex flex-wrap gap-1.5 mt-auto">
-            {car.strengths?.map((s, i) => (
+            {car.strengths?.slice(0, 3).map((s, i) => (
               <span key={`s-${i}`} className="text-[11px] font-medium text-green-800 bg-green-50 px-2.5 py-1 rounded-full">
                 {s}
               </span>
             ))}
-            {car.concerns?.map((c, i) => (
+            {car.concerns?.slice(0, 2).map((c, i) => (
               <span key={`c-${i}`} className="text-[11px] font-medium text-amber-800 bg-amber-50 px-2.5 py-1 rounded-full">
                 {c}
               </span>
@@ -116,7 +143,7 @@ function ResultsContent() {
   const [cars, setCars] = useState<Car[]>([]);
   const [synthesis, setSynthesis] = useState<Synthesis | null>(null);
   const [isLoading, setIsLoading] = useState(true);
-  const [stage, setStage] = useState<string>('Starting search...');
+  const [activityData, setActivityData] = useState<ActivityResultData | undefined>(undefined);
   const [showAllMore, setShowAllMore] = useState(false);
   const [showFBOutreach, setShowFBOutreach] = useState(false);
 
@@ -137,18 +164,6 @@ function ResultsContent() {
 
   useEffect(() => {
     const fetchCars = async () => {
-      const stages = [
-        'Parsing your preferences...',
-        'Searching marketplaces...',
-        'Scoring vehicles...',
-        'Generating recommendations...',
-      ];
-      let stageIdx = 0;
-      const stageInterval = setInterval(() => {
-        stageIdx = Math.min(stageIdx + 1, stages.length - 1);
-        setStage(stages[stageIdx]);
-      }, 3000);
-
       try {
         const res = await fetch('/api/search', {
           method: 'POST',
@@ -157,18 +172,35 @@ function ResultsContent() {
         });
         if (res.ok) {
           const data = await res.json();
-          const carList = data.cars || [];
+          const carList: Car[] = data.cars || [];
           setCars(carList);
           setSynthesis(data.synthesis || null);
-          // Cache cars for detail pages so they don't hit the stub backend endpoint
+
+          // Build activity result data from response
+          const sourceBreakdown: Record<string, number> = {};
+          carList.forEach(c => {
+            const src = c.source_name || 'Unknown';
+            sourceBreakdown[src] = (sourceBreakdown[src] || 0) + 1;
+          });
+          const topPickCount = carList.filter(c => c.headline || c.explanation).length;
+          setActivityData({
+            totalCars: carList.length,
+            topPickCount,
+            sourceBreakdown,
+          });
+
+          // Cache cars for detail pages
           try {
             sessionStorage.setItem('carvex-cars', JSON.stringify(carList));
           } catch { /* quota exceeded — non-critical */ }
         }
       } catch (error) {
         console.error('Failed to fetch cars:', error);
+        // Still complete the feed even on error
+        setActivityData({ totalCars: 0, topPickCount: 0, sourceBreakdown: {} });
       } finally {
-        clearInterval(stageInterval);
+        // Brief delay so the activity feed cascade can play before switching to results
+        await new Promise(r => setTimeout(r, 900));
         setIsLoading(false);
       }
     };
@@ -197,32 +229,43 @@ function ResultsContent() {
       </div>
 
       {isLoading ? (
-        <div>
-          <div className="mb-8 flex items-center gap-3">
-            <div className="w-4 h-4 border-2 border-[var(--text-secondary)] border-t-transparent rounded-full animate-spin" />
-            <span className="text-sm text-[var(--text-secondary)]">{stage}</span>
+        <div className="flex flex-col lg:flex-row gap-8">
+          {/* Activity feed */}
+          <div className="lg:w-[380px] flex-shrink-0">
+            <div className="bg-[var(--bg-primary)] border border-[var(--border)] rounded-[var(--radius-card)] p-5">
+              <div className="flex items-center gap-2 mb-4">
+                <div className={`w-2 h-2 rounded-full ${activityData ? 'bg-green-500' : 'bg-blue-500 animate-pulse'}`} />
+                <span className="text-xs font-semibold uppercase tracking-wider text-[var(--text-secondary)]">
+                  {activityData ? 'Pipeline Complete' : 'Pipeline Active'}
+                </span>
+              </div>
+              <ActivityFeed
+                query={query || subtitle}
+                isComplete={!!activityData}
+                resultData={activityData}
+              />
+            </div>
           </div>
-          {/* Skeleton for top picks */}
-          <div className="space-y-4 mb-12">
-            {[...Array(3)].map((_, i) => (
-              <div key={i} className="bg-[var(--bg-primary)] border border-[var(--border)] rounded-[var(--radius-card)] overflow-hidden animate-pulse flex flex-col md:flex-row">
-                <div className="w-full md:w-[340px] lg:w-[400px] aspect-[4/3] md:aspect-auto md:min-h-[220px] bg-[var(--border)]" />
-                <div className="flex-1 p-6">
-                  <div className="h-3 bg-[var(--border)] rounded w-32 mb-3" />
-                  <div className="h-5 bg-[var(--border)] rounded w-3/4 mb-3" />
-                  <div className="h-4 bg-[var(--border)] rounded w-1/3 mb-4" />
-                  <div className="h-3 bg-[var(--border)] rounded w-full mb-2" />
-                  <div className="h-3 bg-[var(--border)] rounded w-2/3 mb-4" />
-                  <div className="flex gap-2">
-                    <div className="h-6 bg-[var(--border)] rounded-full w-24" />
-                    <div className="h-6 bg-[var(--border)] rounded-full w-20" />
+
+          {/* Skeleton cards */}
+          <div className="flex-1">
+            <div className="space-y-4 mb-8">
+              {[...Array(2)].map((_, i) => (
+                <div key={i} className="bg-[var(--bg-primary)] border border-[var(--border)] rounded-[var(--radius-card)] overflow-hidden animate-pulse flex flex-col md:flex-row">
+                  <div className="w-full md:w-[260px] aspect-[4/3] md:aspect-auto md:min-h-[180px] bg-[var(--border)]" />
+                  <div className="flex-1 p-5">
+                    <div className="h-3 bg-[var(--border)] rounded w-32 mb-3" />
+                    <div className="h-5 bg-[var(--border)] rounded w-3/4 mb-3" />
+                    <div className="h-4 bg-[var(--border)] rounded w-1/3 mb-4" />
+                    <div className="h-3 bg-[var(--border)] rounded w-full mb-2" />
+                    <div className="h-3 bg-[var(--border)] rounded w-2/3" />
                   </div>
                 </div>
-              </div>
-            ))}
-          </div>
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
-            {[...Array(6)].map((_, i) => <SkeletonCard key={i} />)}
+              ))}
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {[...Array(4)].map((_, i) => <SkeletonCard key={i} />)}
+            </div>
           </div>
         </div>
       ) : cars.length > 0 ? (
@@ -288,11 +331,11 @@ function ResultsContent() {
           {/* ── Top Picks ── */}
           {topPicks.length > 0 && (
             <section className="mb-12">
-              <div className="flex items-center gap-2 mb-5">
-                <h2 className="text-lg font-semibold text-[var(--text-primary)]" style={{ fontFamily: 'var(--font-serif)' }}>
+              <div className="flex items-baseline gap-3 mb-6">
+                <h2 className="text-2xl font-semibold text-[var(--text-primary)]" style={{ fontFamily: 'var(--font-serif)' }}>
                   <i>Top Picks</i>
                 </h2>
-                <span className="text-xs text-[var(--text-secondary)] bg-[var(--bg-secondary)] px-2 py-0.5 rounded-full">
+                <span className="text-xs text-[var(--text-secondary)] bg-[var(--bg-secondary)] px-2.5 py-1 rounded-full">
                   AI recommended
                 </span>
               </div>
@@ -307,9 +350,9 @@ function ResultsContent() {
           {/* ── More Results ── */}
           {moreCars.length > 0 && (
             <section>
-              <h2 className="text-lg font-semibold text-[var(--text-primary)] mb-5" style={{ fontFamily: 'var(--font-serif)' }}>
+              <h2 className="text-2xl font-semibold text-[var(--text-primary)] mb-6" style={{ fontFamily: 'var(--font-serif)' }}>
                 <i>More Results</i>
-                <span className="text-sm font-normal text-[var(--text-secondary)] ml-2">
+                <span className="text-sm font-normal text-[var(--text-secondary)] ml-3">
                   {moreCars.length} listings
                 </span>
               </h2>

@@ -13,19 +13,27 @@ const BACKEND_URL = process.env.BACKEND_URL || 'http://localhost:8000';
 function parseFilters(body: Record<string, string>) {
   const filters: Record<string, unknown> = {};
 
-  // Natural language query
+  // Natural language query — this is the primary input
   if (body.query) {
     filters.natural_language = body.query;
   }
 
-  // Budget chip: "Under $10k" → 10000, "Under $20k" → 20000, etc.
+  // Budget chip: "Under $10k" → 10000, "Under $20k" → 20000, "$15k-$25k" range, etc.
   if (body.budget) {
-    const match = body.budget.match(/\$(\d+)k/i);
-    if (match) {
-      filters.budget_max = parseInt(match[1]) * 1000;
+    const rangeMatch = body.budget.match(/\$(\d+)k?\s*[-–]\s*\$(\d+)k/i);
+    if (rangeMatch) {
+      const lo = parseInt(rangeMatch[1]);
+      const hi = parseInt(rangeMatch[2]);
+      filters.budget_min = lo < 200 ? lo * 1000 : lo;
+      filters.budget_max = hi < 200 ? hi * 1000 : hi;
     } else {
-      const num = parseFloat(body.budget);
-      if (!isNaN(num)) filters.budget_max = num;
+      const match = body.budget.match(/\$(\d+)k/i);
+      if (match) {
+        filters.budget_max = parseInt(match[1]) * 1000;
+      } else {
+        const num = parseFloat(body.budget.replace(/[$,]/g, ''));
+        if (!isNaN(num)) filters.budget_max = num < 200 ? num * 1000 : num;
+      }
     }
   }
 
@@ -42,17 +50,17 @@ function parseFilters(body: Record<string, string>) {
     }
   }
 
-  // Fuel chip — append to NL query for now (backend handles via intake agent)
+  // Fuel chip — include both in NL (for semantic parsing) and mention in query
   if (body.fuel && body.fuel !== 'Gas') {
-    const nlParts = [filters.natural_language || '', body.fuel.toLowerCase()].filter(Boolean);
-    filters.natural_language = nlParts.join(', prefer ');
+    const nl = (filters.natural_language as string) || '';
+    filters.natural_language = nl ? `${nl}, prefer ${body.fuel.toLowerCase()}` : `prefer ${body.fuel.toLowerCase()}`;
   }
 
   // Direct structured fields (from advanced filter components)
   if (body.location) filters.location = body.location;
   if (body.make) filters.makes = [body.make];
   if (body.model) {
-    // Append model to NL query so backend regex parser can pick it up
+    // Include model in NL for semantic parsing AND as a hint
     const nl = (filters.natural_language as string) || '';
     filters.natural_language = nl ? `${nl} ${body.model}` : body.model;
   }
@@ -114,6 +122,7 @@ export async function POST(request: Request) {
     const cars = (data.listings || []).map((item: Record<string, unknown>) => {
       const listing = item.listing as Record<string, unknown>;
       const score = item.score as Record<string, number>;
+      const deal = item.deal as Record<string, unknown> | null;
 
       // Match recommendation from synthesis
       const rec = data.synthesis?.recommendations?.find(
@@ -142,10 +151,15 @@ export async function POST(request: Request) {
           reliability: Math.round(score.reliability || 0),
           value: Math.round(score.value || 0),
           efficiency: Math.round(score.efficiency || 0),
-          ownershipCost: Math.round((score as Record<string, number>).ownership_cost || 0),
-          recall: Math.round(score.recall_penalty || 0),
+          recall: Math.round(score.recall || score.recall_penalty || 0),
         },
         recallCount: score.recall_penalty < 100 ? Math.max(1, Math.round((100 - score.recall_penalty) / 15)) : 0,
+        // Deal info
+        dealRating: deal?.rating || 'Unknown',
+        dealSavings: (deal?.savings as number) || 0,
+        dealSavingsPct: (deal?.savings_pct as number) || 0,
+        dealSourceBadge: deal?.source_badge || undefined,
+        crossSource: deal?.cross_source || undefined,
         fuel_type: listing.fuel_type || undefined,
         exterior_color: listing.exterior_color || undefined,
         interior_color: listing.interior_color || undefined,

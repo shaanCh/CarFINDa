@@ -13,7 +13,7 @@ export const mockCars: Car[] = [
     sellerType: 'private',
     imageUrl: 'https://images.unsplash.com/photo-1590362891991-f776e747a588?auto=format&fit=crop&q=80&w=800',
     score: 87,
-    scoreBreakdown: { safety: 80, reliability: 95, value: 90, efficiency: 85, ownershipCost: 50, recall: 100 },
+    scoreBreakdown: { safety: 80, reliability: 95, value: 90, efficiency: 85, recall: 100 },
     marketAvgPrice: 15000,
     recallCount: 0
   },
@@ -29,7 +29,7 @@ export const mockCars: Car[] = [
     sellerType: 'dealer',
     imageUrl: 'https://images.unsplash.com/photo-1621007947382-bb3c3994e3fd?auto=format&fit=crop&q=80&w=800',
     score: 75,
-    scoreBreakdown: { safety: 80, reliability: 95, value: 70, efficiency: 90, ownershipCost: 50, recall: 85 },
+    scoreBreakdown: { safety: 80, reliability: 95, value: 70, efficiency: 90, recall: 85 },
     marketAvgPrice: 18500,
     recallCount: 1
   },
@@ -45,7 +45,7 @@ export const mockCars: Car[] = [
     sellerType: 'private',
     imageUrl: 'https://images.unsplash.com/photo-1542282088-fe8426682b8f?auto=format&fit=crop&q=80&w=800',
     score: 55,
-    scoreBreakdown: { safety: 60, reliability: 80, value: 50, efficiency: 60, ownershipCost: 50, recall: 100 },
+    scoreBreakdown: { safety: 60, reliability: 80, value: 50, efficiency: 60, recall: 100 },
     marketAvgPrice: 16000,
     recallCount: 0
   },
@@ -61,7 +61,7 @@ export const mockCars: Car[] = [
     sellerType: 'dealer',
     imageUrl: 'https://images.unsplash.com/photo-1552519507-da3b142c6e3d?auto=format&fit=crop&q=80&w=800',
     score: 35,
-    scoreBreakdown: { safety: 40, reliability: 30, value: 90, efficiency: 30, ownershipCost: 50, recall: 55 },
+    scoreBreakdown: { safety: 40, reliability: 30, value: 90, efficiency: 30, recall: 55 },
     marketAvgPrice: 9000,
     recallCount: 3
   },
@@ -77,7 +77,7 @@ export const mockCars: Car[] = [
     sellerType: 'dealer',
     imageUrl: 'https://images.unsplash.com/photo-1533473359331-0135ef1b58bf?auto=format&fit=crop&q=80&w=800',
     score: 82,
-    scoreBreakdown: { safety: 80, reliability: 90, value: 60, efficiency: 95, ownershipCost: 50, recall: 100 },
+    scoreBreakdown: { safety: 80, reliability: 90, value: 60, efficiency: 95, recall: 100 },
     marketAvgPrice: 25500,
     recallCount: 0
   }

@@ -1,6 +1,8 @@
 'use client';
 
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useEffect } from 'react';
+import { useNegotiations } from '@/lib/NegotiationContext';
+import type { ActiveNegotiation } from '@/lib/negotiations';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -29,6 +31,7 @@ interface DMPreview {
   sent: boolean;
   sending: boolean;
   error: string | null;
+  conversationUrl: string | null;
 }
 
 type Step = 'idle' | 'logging-in' | 'searching' | 'results' | 'generating' | 'review' | 'sending' | 'done';
@@ -75,31 +78,53 @@ interface Props {
 }
 
 export function FacebookOutreach({ searchFilters, onClose }: Props) {
+  const { addNegotiations } = useNegotiations();
   const [step, setStep] = useState<Step>('idle');
   const [statusText, setStatusText] = useState('');
   const [listings, setListings] = useState<FBListing[]>([]);
   const [dmPreviews, setDmPreviews] = useState<DMPreview[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [sessionReady, setSessionReady] = useState(false);
+  const [notifyEmail, setNotifyEmail] = useState('');
+  const [emailSent, setEmailSent] = useState(false);
+  const [emailSending, setEmailSending] = useState(false);
+
+  // Pre-check Facebook session on mount
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fbApi({ action: 'login' });
+        if (!cancelled && res.success) setSessionReady(true);
+      } catch {
+        // Session not ready — that's fine, login will happen on start
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
 
   // ── Start the full flow ──
   const startFlow = useCallback(async () => {
     setError(null);
 
     try {
-      // Step 1: Login
-      setStep('logging-in');
-      setStatusText('Checking Facebook login...');
+      // Step 1: Login (skip if session pre-checked)
+      if (!sessionReady) {
+        setStep('logging-in');
+        setStatusText('Checking Facebook login...');
 
-      const loginStatus = await fbApi({ action: 'login' });
-      if (loginStatus.needs_2fa) {
-        setError('Facebook requires 2FA. Please complete login manually and try again.');
-        setStep('idle');
-        return;
-      }
-      if (!loginStatus.success && loginStatus.error) {
-        setError(`Login failed: ${loginStatus.error}`);
-        setStep('idle');
-        return;
+        const loginStatus = await fbApi({ action: 'login' });
+        if (loginStatus.needs_2fa) {
+          setError('Facebook requires 2FA. Please complete login manually and try again.');
+          setStep('idle');
+          return;
+        }
+        if (!loginStatus.success && loginStatus.error) {
+          setError(`Login failed: ${loginStatus.error}`);
+          setStep('idle');
+          return;
+        }
+        setSessionReady(true);
       }
 
       // Step 2: Search
@@ -133,7 +158,7 @@ export function FacebookOutreach({ searchFilters, onClose }: Props) {
       setError(msg);
       setStep('idle');
     }
-  }, [searchFilters]);
+  }, [searchFilters, sessionReady]);
 
   // ── Generate AI messages for selected listings ──
   const generateMessages = useCallback(async (selected: FBListing[]) => {
@@ -168,6 +193,7 @@ export function FacebookOutreach({ searchFilters, onClose }: Props) {
             sent: false,
             sending: false,
             error: null,
+            conversationUrl: null,
           });
         } catch (err) {
           previews.push({
@@ -179,6 +205,7 @@ export function FacebookOutreach({ searchFilters, onClose }: Props) {
             sent: false,
             sending: false,
             error: err instanceof Error ? err.message : 'Generation failed',
+            conversationUrl: null,
           });
         }
       }
@@ -239,7 +266,13 @@ export function FacebookOutreach({ searchFilters, onClose }: Props) {
         setDmPreviews(prev =>
           prev.map(p =>
             p.listingId === preview.listingId
-              ? { ...p, sending: false, sent: result.success, error: result.error || null }
+              ? {
+                  ...p,
+                  sending: false,
+                  sent: result.success,
+                  error: result.error || null,
+                  conversationUrl: result.conversation_url || null,
+                }
               : p
           )
         );
@@ -308,10 +341,16 @@ export function FacebookOutreach({ searchFilters, onClose }: Props) {
               <h3 className="text-base font-semibold text-[var(--text-primary)] mb-1">
                 Search Facebook Marketplace
               </h3>
-              <p className="text-sm text-[var(--text-secondary)] max-w-sm mb-6">
+              <p className="text-sm text-[var(--text-secondary)] max-w-sm mb-4">
                 The agent will open a browser, search Facebook Marketplace with your filters,
                 and craft personalized negotiation messages for each listing.
               </p>
+              {sessionReady && (
+                <div className="flex items-center gap-1.5 mb-4">
+                  <div className="w-2 h-2 rounded-full bg-green-500" />
+                  <span className="text-xs font-medium text-green-700">Session active</span>
+                </div>
+              )}
               {error && (
                 <div className="mb-4 text-sm text-[var(--accent-red)] bg-red-50 px-4 py-2.5 rounded-lg max-w-sm">
                   {error}
@@ -431,12 +470,122 @@ export function FacebookOutreach({ searchFilters, onClose }: Props) {
               )}
 
               {step === 'done' && (
-                <div className="flex justify-center">
+                <div className="flex flex-col items-center gap-4">
+                  {/* Email notification opt-in */}
+                  {sentCount > 0 && !emailSent && (
+                    <div className="w-full border border-[var(--border)] rounded-xl p-4 bg-[var(--bg-primary)]">
+                      <div className="flex items-start gap-3 mb-3">
+                        <div className="w-8 h-8 rounded-full bg-blue-50 flex items-center justify-center flex-shrink-0">
+                          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#3b82f6" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                            <path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z" />
+                            <polyline points="22,6 12,13 2,6" />
+                          </svg>
+                        </div>
+                        <div>
+                          <p className="text-sm font-semibold text-[var(--text-primary)]">Get emailed when sellers reply</p>
+                          <p className="text-xs text-[var(--text-secondary)] mt-0.5">
+                            Our agent will email you with counter-offer suggestions when sellers respond.
+                          </p>
+                        </div>
+                      </div>
+                      <div className="flex gap-2">
+                        <input
+                          type="email"
+                          value={notifyEmail}
+                          onChange={(e) => setNotifyEmail(e.target.value)}
+                          placeholder="your@email.com"
+                          className="flex-1 text-sm px-3 py-2 rounded-lg border border-[var(--border)] bg-[var(--bg-secondary)] text-[var(--text-primary)] placeholder:text-[var(--text-secondary)] focus:outline-none focus:border-[var(--blue-mid)] transition-colors"
+                        />
+                        <button
+                          onClick={async () => {
+                            if (!notifyEmail.includes('@')) return;
+                            setEmailSending(true);
+                            try {
+                              const sentItems = dmPreviews.filter(p => p.sent);
+                              await fetch('/api/notifications', {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({
+                                  action: 'outreach-summary',
+                                  email: notifyEmail,
+                                  search_query: searchFilters.query || [
+                                    ...(searchFilters.makes || []),
+                                    ...(searchFilters.models || []),
+                                  ].join(' ') || 'Car search',
+                                  messages_sent: sentItems.length,
+                                  listings: sentItems.map(p => {
+                                    const l = listings.find(x => x.id === p.listingId);
+                                    return {
+                                      title: l?.title || `${l?.year || ''} ${l?.make || ''} ${l?.model || ''}`.trim(),
+                                      price: l?.price || 0,
+                                      target_price: p.targetPrice,
+                                      status: 'sent',
+                                    };
+                                  }),
+                                }),
+                              });
+                              // Also subscribe for negotiation updates
+                              await fetch('/api/notifications', {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({
+                                  action: 'subscribe',
+                                  email: notifyEmail,
+                                  alert_type: 'negotiation',
+                                }),
+                              });
+                              setEmailSent(true);
+                            } catch {
+                              // Non-critical
+                            } finally {
+                              setEmailSending(false);
+                            }
+                          }}
+                          disabled={emailSending || !notifyEmail.includes('@')}
+                          className="text-sm font-medium text-white bg-[var(--text-primary)] px-4 py-2 rounded-lg hover:opacity-80 transition-opacity disabled:opacity-50 whitespace-nowrap"
+                        >
+                          {emailSending ? 'Sending...' : 'Notify me'}
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                  {emailSent && (
+                    <div className="w-full flex items-center gap-2 text-sm text-green-700 bg-green-50 px-4 py-3 rounded-xl">
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><polyline points="20 6 9 17 4 12" /></svg>
+                      Summary sent to {notifyEmail} — we&apos;ll email you when sellers reply
+                    </div>
+                  )}
+                  {sentCount > 0 && (
+                    <button
+                      onClick={() => {
+                        const sentItems = dmPreviews.filter(p => p.sent);
+                        const negs: ActiveNegotiation[] = sentItems.map(p => {
+                          const listing = listings.find(l => l.id === p.listingId);
+                          return {
+                            id: crypto.randomUUID(),
+                            listingId: p.listingId,
+                            listing: listing || { id: p.listingId },
+                            conversationUrl: p.conversationUrl,
+                            targetPrice: p.targetPrice,
+                            maxPrice: null,
+                            messageSent: p.message,
+                            sentAt: new Date().toISOString(),
+                            status: 'active' as const,
+                          };
+                        });
+                        addNegotiations(negs);
+                        onClose();
+                      }}
+                      className="text-sm font-medium text-white bg-green-600 px-6 py-2.5 rounded-full hover:bg-green-700 transition-colors"
+                    >
+                      Track & Monitor Replies
+                    </button>
+                  )}
                   <button
                     onClick={onClose}
-                    className="text-sm font-medium text-[var(--text-primary)] border border-[var(--border)] px-6 py-2.5 rounded-full hover:bg-[var(--bg-secondary)] transition-colors"
+                    className="text-sm font-medium text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors"
                   >
-                    Done
+                    Close
                   </button>
                 </div>
               )}

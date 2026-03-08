@@ -3,7 +3,19 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import Image from 'next/image';
-import { Mountain, Zap, Fuel, Gauge } from 'lucide-react';
+
+const TYPEWRITER_PROMPTS = [
+  'Find me a reliable SUV under $25k and negotiate the price',
+  'Score and rank electric cars under $35k near me',
+  'Auto-DM Marketplace sellers for Tacomas under $20k',
+  'Find a safe, fuel-efficient commuter and handle outreach',
+];
+
+const CHIP_PROMPTS = [
+  'Negotiate a Civic under $15k',
+  'Auto-DM Marketplace sellers',
+  'Score & rank nearby trucks',
+];
 
 const FILTER_OPTIONS = {
   budget: ['Under $10k', 'Under $20k', 'Under $30k', 'Under $50k'],
@@ -20,6 +32,7 @@ export default function LandingPage() {
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [filters, setFilters] = useState<Record<string, string>>({});
   const [userLocation, setUserLocation] = useState('');
+  const [placeholder, setPlaceholder] = useState('');
   const inputRef = useRef<HTMLInputElement>(null);
   const filtersRef = useRef<HTMLDivElement>(null);
 
@@ -50,6 +63,43 @@ export default function LandingPage() {
 
     return () => clearTimeout(timer);
   }, []);
+
+  // Typewriter cycling placeholder
+  useEffect(() => {
+    if (query) return; // Stop animating when user is typing
+    let promptIndex = 0;
+    let charIndex = 0;
+    let isDeleting = false;
+    let timeout: ReturnType<typeof setTimeout>;
+
+    const tick = () => {
+      const current = TYPEWRITER_PROMPTS[promptIndex];
+      if (!isDeleting) {
+        charIndex++;
+        setPlaceholder(current.slice(0, charIndex));
+        if (charIndex === current.length) {
+          // Pause at full text, then start deleting
+          timeout = setTimeout(() => { isDeleting = true; tick(); }, 2000);
+          return;
+        }
+        timeout = setTimeout(tick, 60);
+      } else {
+        charIndex--;
+        setPlaceholder(current.slice(0, charIndex));
+        if (charIndex === 0) {
+          isDeleting = false;
+          promptIndex = (promptIndex + 1) % TYPEWRITER_PROMPTS.length;
+          timeout = setTimeout(tick, 400);
+          return;
+        }
+        timeout = setTimeout(tick, 30);
+      }
+    };
+
+    // Start after a brief delay
+    timeout = setTimeout(tick, 1000);
+    return () => clearTimeout(timeout);
+  }, [query]);
 
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
@@ -102,6 +152,9 @@ export default function LandingPage() {
         <h1 className="landing-wordmark" style={{ fontFamily: 'var(--font-serif)' }}>
           Carfinda
         </h1>
+        <p className="landing-tagline">
+          Your car agent. Finds it. Scores it. Negotiates it.
+        </p>
 
         <form onSubmit={handleSearch} className="glass search-bar">
           {/* Filters toggle */}
@@ -148,7 +201,7 @@ export default function LandingPage() {
             type="text"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder="What kind of car are you looking for?"
+            placeholder={placeholder}
             className="search-bar__input"
             disabled={isLoading}
           />
@@ -170,12 +223,7 @@ export default function LandingPage() {
         </form>
 
         <div className="example-prompts">
-          {[
-            { icon: <Mountain size={14} />, text: 'Reliable SUV under $25k with low mileage' },
-            { icon: <Zap size={14} />, text: 'Best electric cars under $35k' },
-            { icon: <Fuel size={14} />, text: 'Fuel-efficient sedan for a long commute' },
-            { icon: <Gauge size={14} />, text: 'Fun sports car under $20k' },
-          ].map(({ icon, text: prompt }) => (
+          {CHIP_PROMPTS.map((prompt) => (
             <button
               key={prompt}
               type="button"
@@ -185,15 +233,11 @@ export default function LandingPage() {
                 inputRef.current?.focus();
               }}
             >
-              <span className="example-prompt-icon">{icon}</span>
               {prompt}
             </button>
           ))}
         </div>
 
-        <p className="landing-tagline">
-          Your car agent. Finds it. Scores it. Negotiates it.
-        </p>
       </div>
     </div>
   );

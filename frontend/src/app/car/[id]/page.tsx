@@ -1,11 +1,13 @@
 'use client';
 
 import React, { useEffect, useState, Suspense } from 'react';
-import { useParams, useSearchParams } from 'next/navigation';
+import { useParams, useSearchParams, useRouter } from 'next/navigation';
 import { TopBar } from '@/components/layout/TopBar';
 import { ChatPanel } from '@/components/chat/ChatPanel';
 import { ChatBubble } from '@/components/chat/ChatBubble';
 import { ScoreBadge } from '@/components/ui/ScoreBadge';
+import { ScoreBreakdown } from '@/components/ui/ScoreBreakdown';
+import { EmailAlertPanel } from '@/components/ui/EmailAlertPanel';
 import { Car, NegotiationStrategy } from '@/lib/types';
 
 function NegotiationPanel({ car }: { car: Car }) {
@@ -122,8 +124,35 @@ function NegotiationPanel({ car }: { car: Car }) {
 
   if (!strategy) return null;
 
+  const savingsHigh = car.price - strategy.opening_offer.amount;
+  const savingsLow = car.price - strategy.walk_away_price.amount;
+  const showSavings = savingsLow > 0;
+
   return (
     <div className="space-y-4">
+      {/* Savings estimate */}
+      {showSavings && (
+        <div className="border border-green-200 bg-green-50/60 rounded-[var(--radius-card)] p-5">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-full bg-green-100 flex items-center justify-center flex-shrink-0">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#15803d" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <polyline points="23 6 13.5 15.5 8.5 10.5 1 18" />
+                <polyline points="17 6 23 6 23 12" />
+              </svg>
+            </div>
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-wider text-green-700 mb-0.5">Estimated Savings</p>
+              <p className="text-xl font-bold text-green-800">
+                {fmt(Math.max(savingsLow, 0))} &ndash; {fmt(savingsHigh)}
+              </p>
+              <p className="text-xs text-green-700 mt-0.5">
+                Based on market comparables and negotiation leverage
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Opening DM */}
       <div className="border border-[var(--border)] rounded-[var(--radius-card)] p-5">
         <div className="flex items-center justify-between mb-3">
@@ -245,6 +274,7 @@ function NegotiationPanel({ car }: { car: Car }) {
 }
 
 function DetailContent({ id }: { id: string }) {
+  const router = useRouter();
   const searchParams = useSearchParams();
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const openChatMode = searchParams.get('chat') === 'open';
@@ -310,8 +340,20 @@ function DetailContent({ id }: { id: string }) {
 
       {/* Left Column */}
       <div className="w-full lg:w-[63%] flex flex-col gap-5">
+        {/* Back button */}
+        <button
+          onClick={() => router.back()}
+          className="flex items-center gap-1.5 text-sm text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors w-fit"
+        >
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <line x1="19" y1="12" x2="5" y2="12" />
+            <polyline points="12 19 5 12 12 5" />
+          </svg>
+          Back to results
+        </button>
+
         {/* Hero Image */}
-        <div className="relative w-full h-[300px] sm:h-[420px] rounded-[var(--radius-card)] overflow-hidden bg-[var(--bg-secondary)]">
+        <div className="relative w-full h-[220px] sm:h-[300px] rounded-[var(--radius-card)] overflow-hidden bg-[var(--bg-secondary)]">
           {car.imageUrl ? (
             /* eslint-disable-next-line @next/next/no-img-element */
             <img
@@ -423,6 +465,14 @@ function DetailContent({ id }: { id: string }) {
           </div>
         </div>
 
+        {/* Score Breakdown */}
+        {car.scoreBreakdown && (
+          <ScoreBreakdown
+            breakdown={car.scoreBreakdown}
+            composite={car.score}
+          />
+        )}
+
         {/* Strengths & Concerns */}
         {(car.strengths?.length || car.concerns?.length) ? (
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -459,6 +509,10 @@ function DetailContent({ id }: { id: string }) {
 
         {/* Negotiation */}
         <NegotiationPanel car={car} />
+
+        {/* Email Alerts */}
+        <EmailAlertPanel car={car} alertType="negotiation" />
+        <EmailAlertPanel car={car} alertType="price_drop" />
       </div>
 
       {/* Right Column - Chat */}

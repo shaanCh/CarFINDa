@@ -1,21 +1,57 @@
+'use client';
+
 import React from 'react';
 import Link from 'next/link';
+import { useNegotiations } from '@/lib/NegotiationContext';
+import { NegotiationPanel } from '@/components/outreach/NegotiationPanel';
 
 export function TopBar() {
-  return (
-    <div className="sticky top-0 z-50 bg-[var(--bg-primary)]/90 backdrop-blur-md border-b border-[var(--border)] w-full">
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-14 flex items-center justify-between">
-        <Link href="/" className="text-2xl tracking-tight text-[var(--text-primary)] hover:opacity-70 transition-opacity" style={{ fontFamily: 'var(--font-serif)' }}>
-          <i>Carfinda</i>
-        </Link>
+  const { negotiations, unreadCount, isPolling, togglePanel } = useNegotiations();
+  const hasNegotiations = negotiations.length > 0;
 
-        <Link
-          href="/"
-          className="text-sm text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors"
-        >
-          &larr; New search
-        </Link>
+  return (
+    <>
+      <div className="sticky top-0 z-50 bg-[var(--bg-primary)]/90 backdrop-blur-md border-b border-[var(--border)] w-full">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-14 flex items-center justify-between">
+          <Link href="/" className="text-2xl tracking-tight text-[var(--text-primary)] hover:opacity-70 transition-opacity" style={{ fontFamily: 'var(--font-serif)' }}>
+            <i>Carfinda</i>
+          </Link>
+
+          <div className="flex items-center gap-4">
+            {/* Negotiation badge */}
+            {hasNegotiations && (
+              <button
+                onClick={togglePanel}
+                className="relative p-2 rounded-full hover:bg-[var(--bg-secondary)] transition-colors text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
+                title="Active negotiations"
+              >
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+                </svg>
+                {/* Unread count */}
+                {unreadCount > 0 && (
+                  <span className="absolute -top-0.5 -right-0.5 min-w-[18px] h-[18px] flex items-center justify-center text-[10px] font-bold text-white bg-[var(--accent-orange)] rounded-full px-1">
+                    {unreadCount}
+                  </span>
+                )}
+                {/* Polling indicator */}
+                {isPolling && unreadCount === 0 && (
+                  <span className="absolute top-0 right-0 w-2 h-2 rounded-full bg-green-500 animate-pulse" />
+                )}
+              </button>
+            )}
+
+            <Link
+              href="/"
+              className="text-sm text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors"
+            >
+              &larr; New search
+            </Link>
+          </div>
+        </div>
       </div>
-    </div>
+
+      <NegotiationPanel />
+    </>
   );
 }

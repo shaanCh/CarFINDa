@@ -16,11 +16,13 @@ export async function POST(request: Request) {
     const { action, ...payload } = body;
 
     const routes: Record<string, { path: string; method: string }> = {
-      search:       { path: '/api/negotiate/facebook/search', method: 'POST' },
-      'login':      { path: '/api/negotiate/login',           method: 'POST' },
-      '2fa':        { path: '/api/negotiate/login/2fa',       method: 'POST' },
-      'send-dm':    { path: '/api/negotiate/send-dm',         method: 'POST' },
-      'preview-dm': { path: '/api/negotiate/send-dm',         method: 'POST' },
+      search:                { path: '/api/negotiate/facebook/search', method: 'POST' },
+      'login':               { path: '/api/negotiate/login',           method: 'POST' },
+      '2fa':                 { path: '/api/negotiate/login/2fa',       method: 'POST' },
+      'send-dm':             { path: '/api/negotiate/send-dm',         method: 'POST' },
+      'preview-dm':          { path: '/api/negotiate/send-dm',         method: 'POST' },
+      'check-negotiations':  { path: '/api/negotiate/check',           method: 'POST' },
+      'send-reply':          { path: '/api/negotiate/reply',           method: 'POST' },
     };
 
     const route = routes[action];

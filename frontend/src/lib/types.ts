@@ -151,7 +151,6 @@ export interface Car {
     reliability: number;
     value: number;
     efficiency: number;
-    ownershipCost: number;
     recall: number;
   };
   marketAvgPrice?: number;
