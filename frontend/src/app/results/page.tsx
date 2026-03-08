@@ -163,6 +163,24 @@ function ResultsContent() {
   const subtitle = titleParts.length > 0 ? titleParts.join(' \u00b7 ') : 'All Cars';
 
   useEffect(() => {
+    // Build a stable cache key from the search params
+    const paramEntries: [string, string][] = [];
+    searchParams.forEach((value, key) => paramEntries.push([key, value]));
+    paramEntries.sort(([a], [b]) => a.localeCompare(b));
+    const cacheKey = 'carfinda-results:' + new URLSearchParams(paramEntries).toString();
+
+    // Try restoring from sessionStorage (instant back-nav)
+    try {
+      const cached = sessionStorage.getItem(cacheKey);
+      if (cached) {
+        const { cars: cachedCars, synthesis: cachedSynthesis } = JSON.parse(cached);
+        setCars(cachedCars);
+        setSynthesis(cachedSynthesis);
+        setIsLoading(false);
+        return; // skip fetch
+      }
+    } catch { /* cache miss or parse error — fetch fresh */ }
+
     const fetchCars = async () => {
       try {
         const res = await fetch('/api/search', {
@@ -189,14 +207,14 @@ function ResultsContent() {
             sourceBreakdown,
           });
 
-          // Cache cars for detail pages
+          // Cache full results for back-navigation + detail pages
           try {
+            sessionStorage.setItem(cacheKey, JSON.stringify({ cars: carList, synthesis: data.synthesis || null }));
             sessionStorage.setItem('carvex-cars', JSON.stringify(carList));
           } catch { /* quota exceeded — non-critical */ }
         }
       } catch (error) {
         console.error('Failed to fetch cars:', error);
-        // Still complete the feed even on error
         setActivityData({ totalCars: 0, topPickCount: 0, sourceBreakdown: {} });
       } finally {
         // Brief delay so the activity feed cascade can play before switching to results

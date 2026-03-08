@@ -500,6 +500,12 @@ class CarMaxScraper:
             "motor_type": item.get("engineType") or None,
             "transmission": item.get("transmission") or None,
             "drivetrain": item.get("driveTrain") or item.get("drivetrain") or None,
+            "body_type": (
+                (item.get("vehicleTypes") or [None])[0]
+                or item.get("body")
+                or item.get("bodyType")
+                or None
+            ),
             "deal_rating": None,
             "mpg": mpg,
         }
@@ -880,6 +886,7 @@ class CarMaxScraper:
             "motor_type": raw.get("motor_type") or None,
             "transmission": raw.get("transmission") or None,
             "drivetrain": raw.get("drivetrain") or None,
+            "body_type": raw.get("body_type") or None,
             "deal_rating": raw.get("deal_rating") or None,
         }
 
