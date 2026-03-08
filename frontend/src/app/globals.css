@@ -3,19 +3,19 @@
 @tailwind utilities;
 
 :root {
-  --bg-primary:     #FFFFFF;
-  --bg-secondary:   #F0F7FF;
-  --blue-light:     #D6EAFF;
-  --blue-mid:       #4A9FE0;
-  --blue-dark:      #1A6BAF;
-  --accent-orange:  #F97316;
-  --accent-red:     #EF4444;
-  --text-primary:   #0F172A;
-  --text-secondary: #64748B;
-  --border:         #E2EAF4;
+  --bg-primary:     #FDFCFA;
+  --bg-secondary:   #F6F4F0;
+  --blue-light:     #E8E3DA;
+  --blue-mid:       #8A7D6B;
+  --blue-dark:      #3D3428;
+  --accent-orange:  #C4873B;
+  --accent-red:     #B84233;
+  --text-primary:   #1C1916;
+  --text-secondary: #7A7267;
+  --border:         #E5E0D8;
   --radius-bubble:  9999px;
-  --radius-card:    16px;
-  --shadow-card:    0 4px 24px rgba(26,107,175,0.08);
+  --radius-card:    12px;
+  --shadow-card:    0 2px 12px rgba(0,0,0,0.04);
 }
 
 body {
@@ -302,16 +302,57 @@ body {
   to { transform: rotate(360deg); }
 }
 
+/* Example prompts */
+.example-prompts {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 0.5rem;
+  margin-top: 1.25rem;
+  max-width: 640px;
+}
+
+.example-prompt-chip {
+  padding: 0.4rem 0.85rem;
+  font-size: 0.8rem;
+  font-weight: 500;
+  color: rgba(255, 255, 255, 0.85);
+  background: rgba(255, 255, 255, 0.15);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 999px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  white-space: nowrap;
+}
+
+.example-prompt-icon {
+  font-size: 0.9rem;
+  line-height: 1;
+}
+
+.example-prompt-chip:hover {
+  color: #fff;
+  background: rgba(255, 255, 255, 0.22);
+  border-color: rgba(255, 255, 255, 0.35);
+}
+
 /* Tagline */
 .landing-tagline {
   margin-top: 1.75rem;
   font-size: 1.05rem;
   font-weight: 500;
-  color: rgba(255, 255, 255, 0.8);
+  color: rgba(255, 255, 255, 0.85);
   text-align: center;
   letter-spacing: 0.02em;
-  text-shadow: 0 1px 6px rgba(0, 0, 0, 0.2);
+  text-shadow: 0 1px 8px rgba(0, 0, 0, 0.4);
   line-height: 1.5;
+  padding: 0.4rem 1.2rem;
+  background: rgba(0, 0, 0, 0.2);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border-radius: 999px;
 }
 
 /* ── Responsive tweaks ── */
@@ -332,5 +373,10 @@ body {
 
   .landing-tagline {
     font-size: 0.95rem;
+  }
+
+  .example-prompt-chip {
+    font-size: 0.7rem;
+    padding: 0.35rem 0.7rem;
   }
 }

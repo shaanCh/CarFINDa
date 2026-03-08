@@ -44,7 +44,7 @@ export async function GET(request: Request, context: { params: Promise<{ id: str
       nhtsa: { issuesFound: car.recallCount || 0 },
       marketAvg: car.marketAvgPrice
     });
-  } catch (error) {
+  } catch {
     return NextResponse.json({ error: 'Failed to fetch details' }, { status: 500 });
   }
 }
