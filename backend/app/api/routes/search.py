@@ -1,4 +1,5 @@
 import json
+import re
 import uuid
 import logging
 from typing import Optional
@@ -120,10 +121,11 @@ async def create_search(
 
     # ── Step 4: Create search session & scrape ──
     session_id = str(uuid.uuid4())
+    db_user_id: Optional[str] = _valid_user_id_for_db(user_id)
     if db:
         try:
             session_id = await db.create_search_session(
-                user_id, request.natural_language or "", filters,
+                db_user_id, request.natural_language or "", filters,
             )
         except Exception as exc:
             logger.warning("Failed to create search session: %s", exc)
@@ -146,15 +148,16 @@ async def create_search(
 
     # ── Step 5: Persist listings to DB ──
     id_map: dict[str, str] = {}
+    valid_listing_ids: set[str] = set()
     if db:
         try:
-            id_map = await db.upsert_listings(raw_listings)
+            id_map, valid_listing_ids = await db.upsert_listings(raw_listings)
             # Remap scraper IDs to stable DB IDs
             for listing in raw_listings:
                 old_id = listing["id"]
                 if old_id in id_map:
                     listing["id"] = id_map[old_id]
-            # Record price history for VIN-matched listings
+            # Record price history only for listings that exist in DB
             for listing in raw_listings:
                 if listing.get("price") and listing.get("price") > 0:
                     try:
@@ -162,6 +165,7 @@ async def create_search(
                             listing["id"],
                             listing["price"],
                             listing.get("source_name", ""),
+                            valid_listing_ids=valid_listing_ids,
                         )
                     except Exception:
                         pass
@@ -183,7 +187,10 @@ async def create_search(
                 if lid and score_data:
                     score_rows.append(score_dict_to_row(lid, score_data))
             if score_rows:
-                await db.upsert_scores(score_rows)
+                await db.upsert_scores(
+                    score_rows,
+                    valid_listing_ids=valid_listing_ids if valid_listing_ids is not None else None,
+                )
                 logger.info("Persisted %d scores to DB", len(score_rows))
         except Exception as exc:
             logger.warning("Failed to persist scores: %s", exc)
@@ -192,7 +199,11 @@ async def create_search(
     if db:
         try:
             listing_ids = [sl.get("id", "") for sl in scored_listings if sl.get("id")]
-            await db.link_search_listings(session_id, listing_ids)
+            await db.link_search_listings(
+                session_id,
+                listing_ids,
+                valid_listing_ids=valid_listing_ids if valid_listing_ids is not None else None,
+            )
             await db.complete_search_session(session_id, len(scored_listings))
         except Exception as exc:
             logger.warning("Failed to link search results: %s", exc)
@@ -321,6 +332,18 @@ async def get_search_status(
         )
 
     return _build_response(session_id, cached_results)
+
+
+def _valid_user_id_for_db(user_id: str) -> Optional[str]:
+    """Return user_id if it's a valid UUID (exists in auth.users), else None for anonymous."""
+    if not user_id:
+        return None
+    # Dev/anonymous IDs like "dev-user-001" or "anon" are not valid UUIDs
+    uuid_pattern = re.compile(
+        r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+        re.IGNORECASE,
+    )
+    return user_id if uuid_pattern.match(user_id) else None
 
 
 def _build_filters(request: SearchRequest) -> dict:
