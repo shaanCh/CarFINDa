@@ -1,13 +1,67 @@
 import uuid
 import asyncio
+import json
+import logging
 
 from fastapi import APIRouter, Depends, status
 from fastapi.responses import StreamingResponse
 
+from app.config import get_settings
 from app.dependencies import get_current_user
 from app.models.schemas import ChatRequest, ChatResponse
+from app.services.llm.gemini_client import GeminiClient
+from app.services.llm.chat_agent import CarAssistant
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
+
+# In-memory session store (replace with DB in production)
+_sessions: dict[str, dict] = {}
+
+
+def _get_or_create_session(session_id: str, context: dict | None = None) -> dict:
+    session = _sessions.get(session_id, {
+        "history": [],
+        "context": context or {},
+    })
+    if context:
+        session["context"].update(context)
+    return session
+
+
+async def _get_reply(request: ChatRequest, session: dict) -> str:
+    """Get a reply from the LLM assistant (or fallback)."""
+    settings = get_settings()
+
+    if not settings.GEMINI_API_KEY:
+        return (
+            f"I received your message: \"{request.message}\". "
+            "The LLM assistant requires a Gemini API key to be configured. "
+            "Please set GEMINI_API_KEY in your .env file."
+        )
+
+    gemini = GeminiClient(
+        api_key=settings.GEMINI_API_KEY,
+        model=settings.GEMINI_MODEL,
+    )
+    assistant = CarAssistant(gemini=gemini)
+
+    reply = await assistant.chat(
+        message=request.message,
+        conversation_history=session["history"],
+        context=session["context"],
+    )
+
+    # Update session history
+    session["history"].append({"role": "user", "content": request.message})
+    session["history"].append({"role": "model", "content": reply})
+
+    # Keep history bounded
+    if len(session["history"]) > 40:
+        session["history"] = session["history"][-30:]
+
+    return reply
 
 
 @router.post("/", response_model=ChatResponse)
@@ -15,29 +69,20 @@ async def send_message(
     request: ChatRequest,
     user: dict = Depends(get_current_user),
 ):
-    """Send a message to the LLM assistant and receive a reply.
-
-    The assistant can answer questions about specific listings
-    (referenced via ``listing_ids``) or general car-buying advice.
-
-    TODO: Forward the message to the Gemini chat completion endpoint with
-    system context that includes listing data and user preferences.
-    """
+    """Send a message to the CarFINDa assistant and get a full reply."""
     session_id = request.session_id or str(uuid.uuid4())
+    session = _get_or_create_session(session_id, request.context)
 
-    # TODO: Build prompt with listing context if listing_ids provided
-    # TODO: Call Gemini / LangChain agent for response
-    # TODO: Persist conversation history keyed by session_id
-
-    stub_reply = (
-        f"I received your message: \"{request.message}\". "
-        "This is a stub response. The real LLM assistant will be wired in soon."
-    )
-
-    return ChatResponse(
-        message=stub_reply,
-        session_id=session_id,
-    )
+    try:
+        reply = await _get_reply(request, session)
+        _sessions[session_id] = session
+        return ChatResponse(message=reply, session_id=session_id)
+    except Exception as exc:
+        logger.error("Chat agent error: %s", exc)
+        return ChatResponse(
+            message="Sorry, I encountered an error processing your request. Please try again.",
+            session_id=session_id,
+        )
 
 
 @router.post("/stream")
@@ -45,32 +90,30 @@ async def stream_message(
     request: ChatRequest,
     user: dict = Depends(get_current_user),
 ):
-    """Send a message and stream the reply via SSE.
+    """Send a message and stream the reply via SSE word-by-word."""
+    session_id = request.session_id or str(uuid.uuid4())
+    session = _get_or_create_session(session_id, request.context)
 
-    TODO: Yield responses from Gemini streaming completions.
-    """
     async def event_stream():
-        # Stub streaming response matching frontend's mock
-        await asyncio.sleep(0.6)
-        
-        message_topic = 'the price' if hasattr(request, 'message') and 'price' in request.message.lower() else 'this car'
-        listing_str = request.listing_ids[0] if request.listing_ids else "unknown"
-        
-        response_text = (
-            f"That's a great question about {message_topic} (ID: {listing_str}). "
-            "Based on our analysis, this is a solid choice. The numbers look good given the current market, "
-            "and its reliability score is in range. \n\nHowever, always make sure to ask for maintenance records before purchasing. "
-            "Do you want to know more about similar cars, or do you want negotiation tips?"
-        )
-        
-        words = response_text.split(" ")
+        try:
+            reply = await _get_reply(request, session)
+            _sessions[session_id] = session
+        except Exception as exc:
+            logger.error("Chat stream error: %s", exc)
+            reply = "Sorry, I encountered an error processing your request."
+
+        # Stream session ID first
+        yield f'data: {json.dumps({"sessionId": session_id})}\n\n'
+
+        # Stream words for typing effect
+        words = reply.split(" ")
         for word in words:
-            yield f'data: {{"text": "{word} "}}\n\n'
+            yield f'data: {json.dumps({"text": word + " "})}\n\n'
             await asyncio.sleep(0.03)
-            
+
         yield 'data: [DONE]\n\n'
 
     return StreamingResponse(
         event_stream(),
-        media_type="text/event-stream"
+        media_type="text/event-stream",
     )

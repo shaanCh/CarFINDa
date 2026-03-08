@@ -77,7 +77,7 @@ export function ChatPanel({ carId, score }: ChatPanelProps) {
                   try {
                     const parsed = JSON.parse(data);
                     if (parsed.text) text = parsed.text;
-                  } catch (e) {
+                  } catch {
                     // ignore format errors for raw strings
                   }
                   last.content += text.replace(/\\n/g, '\n');

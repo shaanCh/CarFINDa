@@ -1,126 +1,153 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
-import { FilterChip } from '@/components/ui/FilterChip';
-import { AdvancedFilters } from '@/components/layout/AdvancedFilters';
-import { SearchParams } from '@/lib/types';
+import Image from 'next/image';
+
+const FILTER_OPTIONS = {
+  budget: ['Under $10k', 'Under $20k', 'Under $30k', 'Under $50k'],
+  type: ['Sedan', 'SUV', 'Truck', 'Coupe', 'Hatchback', 'Van'],
+  fuel: ['Gas', 'Hybrid', 'Electric', 'Diesel'],
+  year: ['2020+', '2018+', '2015+', '2010+'],
+};
 
 export default function LandingPage() {
   const router = useRouter();
-  const [params, setParams] = useState<SearchParams>({});
+  const [query, setQuery] = useState('');
   const [isLoading, setIsLoading] = useState(false);
-  const [error, setError] = useState('');
+  const [mounted, setMounted] = useState(false);
+  const [filtersOpen, setFiltersOpen] = useState(false);
+  const [filters, setFilters] = useState<Record<string, string>>({});
+  const inputRef = useRef<HTMLInputElement>(null);
+  const filtersRef = useRef<HTMLDivElement>(null);
 
-  const updateParam = (key: keyof SearchParams, value: any) => {
-    setParams(prev => ({ ...prev, [key]: value }));
-    setError('');
+  useEffect(() => {
+    setMounted(true);
+    const timer = setTimeout(() => inputRef.current?.focus(), 800);
+    return () => clearTimeout(timer);
+  }, []);
+
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (filtersRef.current && !filtersRef.current.contains(e.target as Node)) {
+        setFiltersOpen(false);
+      }
+    };
+    if (filtersOpen) document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [filtersOpen]);
+
+  const toggleFilter = (category: string, value: string) => {
+    setFilters(prev => {
+      if (prev[category] === value) {
+        const next = { ...prev };
+        delete next[category];
+        return next;
+      }
+      return { ...prev, [category]: value };
+    });
   };
 
-  const handleSearch = () => {
-    if (!params.make && !params.model && !params.budget) {
-      setError('Please select a Make, Model, or Max Budget to start searching.');
-      return;
-    }
+  const activeCount = Object.keys(filters).length;
+
+  const handleSearch = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!query.trim() && activeCount === 0) return;
 
     setIsLoading(true);
-    
     const searchParams = new URLSearchParams();
-    Object.entries(params).forEach(([key, value]) => {
-      if (value) searchParams.append(key, String(value));
-    });
-    
+    if (query.trim()) searchParams.set('query', query.trim());
+    Object.entries(filters).forEach(([k, v]) => searchParams.set(k, v));
     router.push(`/results?${searchParams.toString()}`);
   };
 
   return (
-    <div className="min-h-screen bg-white relative overflow-hidden flex flex-col">
-      <div className="absolute -top-40 -right-40 w-[600px] h-[600px] bg-[var(--blue-light)] rounded-full blur-[100px] opacity-70 pointer-events-none" />
+    <div className="landing-root">
+      <Image
+        src="/hero-bg.png"
+        alt=""
+        fill
+        priority
+        className="landing-bg"
+        sizes="100vw"
+      />
+      <div className="landing-overlay" />
 
-      <header className="p-6 md:p-10 relative z-10 w-full">
-        <h1 className="font-sora font-bold text-3xl md:text-4xl text-[var(--text-primary)] tracking-tight">CarFINDa</h1>
-        <p className="text-[var(--text-secondary)] font-medium mt-1">Find the right car. <span className="text-[var(--blue-dark)]">No BS.</span></p>
-      </header>
+      <div className={`landing-content ${mounted ? 'landing-content--visible' : ''}`}>
+        <h1 className="landing-wordmark" style={{ fontFamily: 'var(--font-serif)' }}>
+          Carvex
+        </h1>
 
-      <main className="flex-1 flex flex-col justify-center items-center px-4 w-full max-w-4xl mx-auto relative z-10 pb-20">
-        
-        <div className="w-full text-center mb-10">
-          <h2 className="font-sora text-4xl md:text-6xl font-bold text-[var(--text-primary)] tracking-tight mb-4">
-            Your perfect ride, zero stress.
-          </h2>
-          <p className="text-xl text-[var(--text-secondary)]">Tell us what matters. We do the math.</p>
-        </div>
+        <form onSubmit={handleSearch} className="glass search-bar">
+          {/* Filters toggle */}
+          <div className="filters-anchor" ref={filtersRef}>
+            <button
+              type="button"
+              onClick={() => setFiltersOpen(o => !o)}
+              className={`search-bar__filters-btn ${filtersOpen || activeCount > 0 ? 'search-bar__filters-btn--active' : ''}`}
+              aria-label="Filters"
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <line x1="4" y1="6" x2="20" y2="6" />
+                <line x1="8" y1="12" x2="16" y2="12" />
+                <line x1="11" y1="18" x2="13" y2="18" />
+              </svg>
+              {activeCount > 0 && <span className="filters-badge">{activeCount}</span>}
+            </button>
 
-        <div className="flex flex-wrap justify-center gap-3 w-full max-w-3xl">
-          <FilterChip 
-            label="Make" 
-            icon="🚗" 
-            value={params.make} 
-            isActive={!!params.make} 
-            onClick={() => {
-              const p = prompt('Enter Make (e.g. Honda, Toyota)');
-              if (p) updateParam('make', p);
-            }} 
-          />
-          <FilterChip 
-            label="Model" 
-            icon="🔍" 
-            value={params.model} 
-            isActive={!!params.model} 
-            onClick={() => {
-              const p = prompt('Enter Model (e.g. Civic, Camry)');
-              if (p) updateParam('model', p);
-            }} 
-          />
-          <FilterChip 
-            label="Max Budget" 
-            icon="💰" 
-            value={params.budget ? `$${params.budget}` : undefined} 
-            isActive={!!params.budget} 
-            onClick={() => {
-              const p = prompt('Enter Maximum Budget');
-              if (p && !isNaN(Number(p))) updateParam('budget', Number(p));
-            }} 
-          />
-          <FilterChip 
-            label="Max Mileage" 
-            icon="🛣️" 
-            value={params.mileage ? `${params.mileage} mi` : undefined} 
-            isActive={!!params.mileage} 
-            onClick={() => {
-              const p = prompt('Enter Maximum Mileage');
-              if (p && !isNaN(Number(p))) updateParam('mileage', Number(p));
-            }} 
-          />
-          <FilterChip 
-            label="Location" 
-            icon="📍" 
-            value={params.location} 
-            isActive={!!params.location} 
-            onClick={() => {
-              const p = prompt('Enter City or Zip (e.g. Chicago, 60601)');
-              if (p) updateParam('location', p);
-            }} 
-          />
-        </div>
+            {filtersOpen && (
+              <div className="glass filters-dropdown">
+                {Object.entries(FILTER_OPTIONS).map(([category, options]) => (
+                  <div key={category} className="filters-group">
+                    <span className="filters-group__label">{category}</span>
+                    <div className="filters-group__options">
+                      {options.map(opt => (
+                        <button
+                          key={opt}
+                          type="button"
+                          className={`filters-chip ${filters[category] === opt ? 'filters-chip--active' : ''}`}
+                          onClick={() => toggleFilter(category, opt)}
+                        >
+                          {opt}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
 
-        <AdvancedFilters />
-
-        {error && (
-          <p className="text-[var(--accent-red)] text-sm font-medium mt-4 animate-in fade-in">{error}</p>
-        )}
-
-        <div className="mt-10 w-full max-w-sm">
-          <button
-            onClick={handleSearch}
+          <input
+            ref={inputRef}
+            type="text"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="What kind of car are you looking for?"
+            className="search-bar__input"
             disabled={isLoading}
-            className="w-full bg-[var(--blue-dark)] text-white font-bold text-lg py-4 px-8 rounded-full shadow-[var(--shadow-card)] transition-all hover:-translate-y-1 hover:shadow-lg disabled:opacity-70 disabled:hover:translate-y-0 disabled:hover:shadow-[var(--shadow-card)] flex items-center justify-center gap-2"
+          />
+          <button
+            type="submit"
+            disabled={isLoading || (!query.trim() && activeCount === 0)}
+            className="search-bar__btn"
+            aria-label="Search"
           >
-            {isLoading ? 'Searching...' : 'Find My Car →'}
+            {isLoading ? (
+              <span className="search-bar__spinner" />
+            ) : (
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                <line x1="5" y1="12" x2="19" y2="12" />
+                <polyline points="12 5 19 12 12 19" />
+              </svg>
+            )}
           </button>
-        </div>
+        </form>
 
-      </main>
+        <p className="landing-tagline">
+          Your car agent. Finds it. Scores it. Negotiates it.
+        </p>
+      </div>
     </div>
   );
 }

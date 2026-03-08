@@ -1,85 +1,166 @@
 import { NextResponse } from 'next/server';
-import { Car } from '@/lib/types';
 
-const BACKEND_URL = 'http://127.0.0.1:8000';
+const BACKEND_URL = process.env.BACKEND_URL || 'http://localhost:8000';
+
+/**
+ * Parse filter values from the landing page and advanced filter components
+ * into backend-compatible fields.
+ *
+ * Landing page sends:   { query, budget: "Under $20k", type: "SUV", year: "2020+", fuel: "Hybrid" }
+ * Advanced filters:     { make: "Toyota", model: "Camry", mileage: "80000", location: "Denver, CO", ... }
+ * Backend expects:      { natural_language, budget_max, body_types, min_year, makes, ... }
+ */
+function parseFilters(body: Record<string, string>) {
+  const filters: Record<string, unknown> = {};
+
+  // Natural language query
+  if (body.query) {
+    filters.natural_language = body.query;
+  }
+
+  // Budget chip: "Under $10k" → 10000, "Under $20k" → 20000, etc.
+  if (body.budget) {
+    const match = body.budget.match(/\$(\d+)k/i);
+    if (match) {
+      filters.budget_max = parseInt(match[1]) * 1000;
+    } else {
+      const num = parseFloat(body.budget);
+      if (!isNaN(num)) filters.budget_max = num;
+    }
+  }
+
+  // Type chip: "SUV" → body_types: ["SUV"]
+  if (body.type) {
+    filters.body_types = [body.type];
+  }
+
+  // Year chip: "2020+" → min_year: 2020
+  if (body.year) {
+    const yearMatch = body.year.match(/(\d{4})/);
+    if (yearMatch) {
+      filters.min_year = parseInt(yearMatch[1]);
+    }
+  }
+
+  // Fuel chip — append to NL query for now (backend handles via intake agent)
+  if (body.fuel && body.fuel !== 'Gas') {
+    const nlParts = [filters.natural_language || '', body.fuel.toLowerCase()].filter(Boolean);
+    filters.natural_language = nlParts.join(', prefer ');
+  }
+
+  // Direct structured fields (from advanced filter components)
+  if (body.location) filters.location = body.location;
+  if (body.make) filters.makes = [body.make];
+  if (body.model) {
+    // Append model to NL query so backend regex parser can pick it up
+    const nl = (filters.natural_language as string) || '';
+    filters.natural_language = nl ? `${nl} ${body.model}` : body.model;
+  }
+  if (body.mileage) {
+    const mi = parseInt(body.mileage);
+    if (!isNaN(mi)) filters.max_mileage = mi;
+  }
+  if (body.transmission && body.transmission !== 'Any') {
+    const nl = (filters.natural_language as string) || '';
+    filters.natural_language = nl ? `${nl}, ${body.transmission}` : body.transmission;
+  }
+
+  // Defaults
+  if (!filters.location) filters.location = '';
+  if (!filters.natural_language) filters.natural_language = '';
+
+  return filters;
+}
 
 export async function POST(request: Request) {
   try {
     const body = await request.json();
+    const searchPayload = parseFilters(body);
 
-    // Map Next.js params to FastAPI format
-    const queryParams = new URLSearchParams();
-
-    if (body.make) queryParams.append('makes', body.make);
-    if (body.model) queryParams.append('model', body.model);
-    if (body.budget) queryParams.append('max_price', String(body.budget));
-    if (body.mileage) queryParams.append('max_mileage', String(body.mileage));
-    if (body.location) queryParams.append('location', body.location);
-    if (body.reliabilityPriority)
-      queryParams.append('reliability_priority', String(body.reliabilityPriority));
-    if (body.ownershipCostConcern)
-      queryParams.append('ownership_cost_concern', String(body.ownershipCostConcern));
-    if (body.sellerType) queryParams.append('seller_type', body.sellerType);
-    if (body.transmission) queryParams.append('transmission', body.transmission);
-    if (body.primaryUse) queryParams.append('primary_use', body.primaryUse);
-
-    const res = await fetch(
-      `${BACKEND_URL}/api/listings/?${queryParams.toString()}`,
-      {
+    let backendRes: Response;
+    try {
+      backendRes = await fetch(`${BACKEND_URL}/api/search/`, {
+        method: 'POST',
         headers: {
-          // Authorization header can be added later if needed
           'Content-Type': 'application/json',
         },
-      }
-    );
-
-    if (!res.ok) {
-      console.error('Backend error:', res.status);
-      throw new Error('Failed to fetch listings');
+        body: JSON.stringify(searchPayload),
+        signal: AbortSignal.timeout(120_000), // 2 min timeout for scraping
+      });
+    } catch (fetchErr) {
+      console.error('Backend connection failed:', fetchErr);
+      return NextResponse.json({
+        cars: [],
+        searchId: 'error',
+        synthesis: null,
+        error: 'Could not connect to backend. Make sure the backend is running on ' + BACKEND_URL,
+      });
     }
 
-    const data = await res.json();
+    if (!backendRes.ok) {
+      const errorText = await backendRes.text();
+      console.error('Backend error:', backendRes.status, errorText);
+      return NextResponse.json({
+        cars: [],
+        searchId: 'error',
+        synthesis: null,
+        error: `Backend returned ${backendRes.status}: ${errorText}`,
+      });
+    }
 
-    // Transform backend ListingWithScore into frontend Car shape
-    const mappedCars: Car[] = (data.listings || []).map((item: any) => ({
-      id: item.listing.id,
-      make: item.listing.make,
-      model: item.listing.model,
-      year: item.listing.year,
-      trim: item.listing.trim,
-      price: item.listing.price,
-      mileage: item.listing.mileage ?? 0,
-      location: item.listing.location ?? 'Unknown',
-      sellerType: item.listing.seller_type ?? 'dealer',
-      transmission: item.listing.transmission ?? 'automatic',
-      imageUrl:
-        item.listing.image_urls?.[0] ??
-        'https://images.unsplash.com/photo-1590362891991-f776e747a588?auto=format&fit=crop&q=80&w=800',
+    const data = await backendRes.json();
 
-      // Convert backend 0–10 score → frontend 0–100
-      score: Math.round((item.score?.composite ?? 0) * 10),
+    // Transform backend ListingWithScore[] to frontend Car[]
+    const cars = (data.listings || []).map((item: Record<string, unknown>) => {
+      const listing = item.listing as Record<string, unknown>;
+      const score = item.score as Record<string, number>;
 
-      scoreBreakdown: {
-        budgetFit: Math.round((item.score?.value ?? 0) * 10),
-        mileageScore: Math.round((item.score?.safety ?? 0) * 10),
-        reliability: Math.round((item.score?.reliability ?? 0) * 10),
-        priceVsMarket: Math.round((item.score?.composite ?? 0) * 10),
-      },
+      // Match recommendation from synthesis
+      const rec = data.synthesis?.recommendations?.find(
+        (r: Record<string, unknown>) => r.listing_id === listing.id
+      );
 
-      marketAvgPrice: item.listing.price + 1500, // temporary fallback
-      recallCount: 0, // temporary fallback
-    }));
+      return {
+        id: listing.id,
+        make: listing.make,
+        model: listing.model,
+        year: listing.year,
+        trim: listing.trim || '',
+        price: listing.price || 0,
+        mileage: listing.mileage || 0,
+        location: listing.location || 'Unknown',
+        sellerType: (listing.source_name as string)?.toLowerCase().includes('private') ? 'private' : 'dealer',
+        transmission: listing.transmission || 'automatic',
+        imageUrl: (listing.image_urls as string[])?.[0] || '',
+        score: Math.round(score.composite || 0),
+        scoreBreakdown: {
+          budgetFit: Math.round(score.value || 0),
+          mileageScore: Math.round(score.efficiency || 0),
+          reliability: Math.round(score.reliability || 0),
+          priceVsMarket: Math.round(score.value || 0),
+        },
+        recallCount: score.recall_penalty < 100 ? Math.max(1, Math.round((100 - score.recall_penalty) / 15)) : 0,
+        headline: rec?.headline,
+        explanation: rec?.explanation,
+        strengths: rec?.strengths || [],
+        concerns: rec?.concerns || [],
+        source_url: listing.source_url,
+        source_name: listing.source_name,
+        vin: listing.vin,
+      };
+    });
 
     return NextResponse.json({
-      cars: mappedCars,
-      searchId: 'search-api',
+      cars,
+      searchId: data.search_session_id,
+      synthesis: data.synthesis || null,
     });
+
   } catch (error) {
     console.error('Search API error:', error);
-
     return NextResponse.json(
-      { error: 'Invalid request' },
-      { status: 400 }
+      { cars: [], searchId: 'error', synthesis: null, error: String(error) },
+      { status: 500 }
     );
   }
 }

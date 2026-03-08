@@ -1,10 +1,13 @@
 """
 Scraping Pipeline -- Orchestrates multi-source scraping, deduplication, and sorting.
 
-Hybrid architecture:
-  - CarMax: httpx JSON API first, sidecar browser + BS4 fallback
-  - Autotrader: sidecar browser + BS4 (blocked by Akamai over plain HTTP)
-  - CarGurus: sidecar browser + BS4 (blocked by Cloudflare over plain HTTP)
+Active sources:
+  - CarMax: httpx JSON API (fast, no bot protection)
+  - Cars.com: sidecar browser + BS4 (renders JS, no CAPTCHA)
+
+Disabled sources (require proxy to bypass bot protection):
+  - Autotrader: blocked by Akamai (IP-level, not a solvable CAPTCHA)
+  - CarGurus: blocked by DataDome (CapSolver requires proxy)
 
 Each scraper receives a shared BrowserClient and its own profile name to
 avoid tab conflicts in the sidecar.
@@ -25,9 +28,8 @@ from typing import Any, Optional
 from app.config import get_settings
 from app.services.scraping.browser_client import BrowserClient
 from app.services.scraping.dedup import deduplicate_listings
-from app.services.scraping.scrapers.autotrader import AutotraderScraper
 from app.services.scraping.scrapers.carmax import CarMaxScraper
-from app.services.scraping.scrapers.cargurus import CarGurusScraper
+from app.services.scraping.scrapers.carscom import CarsComScraper
 
 logger = logging.getLogger(__name__)
 
@@ -127,8 +129,7 @@ async def run_scraping_pipeline(
     # Each scraper gets its own profile to avoid tab conflicts
     scrapers = [
         CarMaxScraper(browser=browser, profile="carfinda-carmax"),
-        AutotraderScraper(browser=browser, profile="carfinda-autotrader"),
-        CarGurusScraper(browser=browser, profile="carfinda-cargurus"),
+        CarsComScraper(browser=browser, profile="carfinda-carscom"),
     ]
 
     # Run all scrapers in parallel -- each is error-isolated

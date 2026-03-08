@@ -1,10 +1,13 @@
 """
 Market value estimation service.
 
-Primary: Uses the Tavily search API to look up KBB / market pricing data.
-Fallback: Simple depreciation-based estimation formula.
+Priority chain:
+  1. VinAudit Market Value API  (structured, high-confidence)
+  2. Tavily search API          (web-scraped KBB / market data)
+  3. Depreciation formula       (offline fallback)
 """
 
+import re
 import time
 from datetime import datetime
 from typing import Any
@@ -75,39 +78,149 @@ async def estimate_market_value(
     year: int,
     mileage: int,
     trim: str = "",
+    vin: str = "",
 ) -> dict:
     """
     Estimate fair market value for a vehicle.
 
-    Tries Tavily search API first, falls back to depreciation formula.
+    Tries VinAudit first, then Tavily search, then depreciation formula.
 
     Returns:
         estimated_value (float),
         value_low (float),
         value_high (float),
-        confidence ("api" | "estimate"),
+        confidence ("api" | "search" | "estimate"),
         source (str),
-        error (str, only on failure)
     """
-    cache_key = f"value:{make}:{model}:{year}:{mileage}:{trim}"
+    cache_key = f"value:{make}:{model}:{year}:{mileage}:{trim}:{vin}"
     cached = _cache_get(cache_key)
     if cached is not None:
         return cached
 
-    # Try Tavily first
     settings = get_settings()
-    tavily_key = settings.TAVILY_API_KEY
 
-    if tavily_key:
-        tavily_result = await _tavily_lookup(make, model, year, mileage, trim, tavily_key)
+    # 1) VinAudit — structured API
+    if settings.VINAUDIT_API_KEY:
+        vinaudit_result = await _vinaudit_lookup(
+            make, model, year, mileage, trim, vin, settings.VINAUDIT_API_KEY,
+        )
+        if vinaudit_result is not None:
+            _cache_set(cache_key, vinaudit_result, _TTL_VALUE)
+            return vinaudit_result
+
+    # 2) Tavily — web search fallback
+    if settings.TAVILY_API_KEY:
+        tavily_result = await _tavily_lookup(
+            make, model, year, mileage, trim, settings.TAVILY_API_KEY,
+        )
         if tavily_result is not None:
             _cache_set(cache_key, tavily_result, _TTL_VALUE)
             return tavily_result
 
-    # Fallback: depreciation formula
+    # 3) Depreciation formula — offline fallback
     fallback = _depreciation_estimate(make, model, year, mileage)
     _cache_set(cache_key, fallback, _TTL_VALUE)
     return fallback
+
+
+# ---------------------------------------------------------------------------
+# VinAudit Market Value API
+# ---------------------------------------------------------------------------
+
+_VINAUDIT_VIN_URL = "https://marketvalue.vinaudit.com/getmarketvalue.php"
+_VINAUDIT_YMMTID_URL = "https://marketvalues.vinaudit.com/getmarketvalue.php"
+
+
+async def _vinaudit_lookup(
+    make: str,
+    model: str,
+    year: int,
+    mileage: int,
+    trim: str,
+    vin: str,
+    api_key: str,
+) -> dict | None:
+    """Query VinAudit for market value. Tries VIN first, then year/make/model/trim."""
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(15.0)) as client:
+            # Try VIN-based lookup first if available
+            if vin:
+                result = await _vinaudit_request(
+                    client, _VINAUDIT_VIN_URL,
+                    {"key": api_key, "vin": vin, "format": "json",
+                     "period": "90", "mileage": str(mileage) if mileage else "average"},
+                )
+                if result is not None:
+                    return result
+
+            # Fall back to YMMTID lookup — try with trim, then without
+            for t in ([trim, ""] if trim else [""]):
+                ymmtid = _build_ymmtid(year, make, model, t)
+                params = {
+                    "key": api_key,
+                    "id": ymmtid,
+                    "format": "json",
+                    "period": "90",
+                    "mileage": str(mileage) if mileage else "average",
+                }
+                result = await _vinaudit_request(
+                    client, _VINAUDIT_YMMTID_URL, params,
+                )
+                if result is not None:
+                    return result
+
+            return None
+
+    except (httpx.HTTPStatusError, httpx.RequestError):
+        return None
+
+
+async def _vinaudit_request(
+    client: httpx.AsyncClient,
+    url: str,
+    params: dict,
+) -> dict | None:
+    """Make a single VinAudit API request and parse the response."""
+    resp = await client.get(url, params=params)
+    resp.raise_for_status()
+    data = resp.json()
+
+    if not data.get("success"):
+        return None
+
+    prices = data.get("prices", {})
+    avg = prices.get("average")
+    if not avg or avg <= 0:
+        return None
+
+    return {
+        "estimated_value": round(float(avg), -2),
+        "value_low": round(float(prices.get("below", avg * 0.85)), -2),
+        "value_high": round(float(prices.get("above", avg * 1.15)), -2),
+        "confidence": "api",
+        "source": "vinaudit",
+        "detail": {
+            "count": data.get("count"),
+            "certainty": data.get("certainty"),
+            "period": data.get("period"),
+            "mileage_adjustment": (
+                data.get("adjustments", {}).get("mileage", {}).get("adjustment")
+            ),
+        },
+    }
+
+
+def _build_ymmtid(year: int, make: str, model: str, trim: str) -> str:
+    """Build a VinAudit YMMTID string like '2020_toyota_camry_se'."""
+    # VinAudit IDs use no hyphens (e.g. "f150" not "f-150")
+    parts = [
+        str(year),
+        make.lower().strip().replace("-", ""),
+        model.lower().strip().replace("-", ""),
+    ]
+    if trim:
+        parts.append(trim.lower().strip().replace("-", ""))
+    return "_".join(parts)
 
 
 # ---------------------------------------------------------------------------
@@ -180,7 +293,7 @@ async def _tavily_lookup(
             "estimated_value": round(adjusted_value, -2),  # round to nearest $100
             "value_low": round(adjusted_low, -2),
             "value_high": round(adjusted_high, -2),
-            "confidence": "api",
+            "confidence": "search",
             "source": "tavily_search",
         }
 
@@ -193,8 +306,6 @@ def _extract_prices(text: str) -> list[float]:
     Extract dollar amounts from text that look like car prices ($XX,XXX format).
     Filters to reasonable vehicle price range ($1,000 - $200,000).
     """
-    import re
-
     # Match patterns like $25,000 or $25000 or $25,500.00
     pattern = r"\$\s*([\d]{1,3}(?:,\d{3})*(?:\.\d{2})?)"
     matches = re.findall(pattern, text)

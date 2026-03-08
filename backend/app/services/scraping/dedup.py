@@ -112,9 +112,9 @@ def _merge_listings(
 
     # Fill in missing fields from the new listing
     fill_fields = [
-        "vin", "trim", "mileage", "location", "exterior_color",
-        "interior_color", "fuel_type", "transmission", "drivetrain",
-        "deal_rating",
+        "vin", "trim", "title", "mileage", "mpg", "monthly_payment",
+        "location", "exterior_color", "interior_color", "fuel_type",
+        "motor_type", "transmission", "drivetrain", "deal_rating",
     ]
     for field in fill_fields:
         if merged.get(field) is None and new.get(field) is not None:

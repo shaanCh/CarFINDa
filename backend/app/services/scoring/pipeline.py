@@ -10,7 +10,7 @@ import logging
 from dataclasses import asdict
 from typing import Any
 
-from app.services.scoring import nhtsa, epa, market_value
+from app.services.scoring import nhtsa, epa, market_value, ownership_cost
 from app.services.scoring.calculator import calculate_composite_score, ListingScore
 
 logger = logging.getLogger(__name__)
@@ -80,10 +80,11 @@ async def _score_single_listing(listing: dict) -> dict:
     safety_task = nhtsa.get_safety_ratings(make, model, year)
     complaints_task = nhtsa.get_complaints(make, model, year)
     recalls_task = nhtsa.get_recalls(vin=vin, make=make, model=model, year=year)
-    fuel_task = epa.get_fuel_economy(make, model, year)
+    fuel_task = epa.get_fuel_economy(make, model, year, trim)
     value_task = market_value.estimate_market_value(
-        make, model, year, mileage, trim
+        make, model, year, mileage, trim, vin
     )
+    cost_task = ownership_cost.get_ownership_cost(vin=vin)
 
     (
         safety_data,
@@ -91,12 +92,14 @@ async def _score_single_listing(listing: dict) -> dict:
         recalls_data,
         fuel_data,
         value_data,
+        cost_data,
     ) = await asyncio.gather(
         safety_task,
         complaints_task,
         recalls_task,
         fuel_task,
         value_task,
+        cost_task,
         return_exceptions=True,
     )
 
@@ -106,6 +109,9 @@ async def _score_single_listing(listing: dict) -> dict:
     recall_count = _safe_extract(recalls_data, "recall_count", 0)
     mpg_combined = _safe_extract(fuel_data, "combined_mpg", None)
     estimated_value = float(_safe_extract(value_data, "estimated_value", 0) or 0)
+    annual_cost = _safe_extract(cost_data, "annual_average", None)
+    if annual_cost is not None and annual_cost <= 0:
+        annual_cost = None
 
     # Use estimated value for price if no listing price given
     if price <= 0 and estimated_value > 0:
@@ -119,6 +125,7 @@ async def _score_single_listing(listing: dict) -> dict:
         estimated_value=estimated_value,
         mpg_combined=mpg_combined,
         open_recalls=recall_count,
+        annual_ownership_cost=annual_cost,
     )
 
     # Build enriched listing
@@ -131,6 +138,7 @@ async def _score_single_listing(listing: dict) -> dict:
             "recalls": _safe_dict(recalls_data),
             "fuel_economy": _safe_dict(fuel_data),
             "market_value": _safe_dict(value_data),
+            "ownership_cost": _safe_dict(cost_data),
         },
     }
 

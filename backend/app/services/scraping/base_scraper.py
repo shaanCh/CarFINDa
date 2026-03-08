@@ -305,7 +305,11 @@ class BaseScraper(ABC):
             "exterior_color": raw.get("exterior_color") or None,
             "interior_color": raw.get("interior_color") or None,
             "fuel_type": raw.get("fuel_type") or None,
+            "motor_type": raw.get("motor_type") or None,
             "transmission": raw.get("transmission") or None,
             "drivetrain": raw.get("drivetrain") or None,
             "deal_rating": raw.get("deal_rating") or None,
+            "title": raw.get("title") or None,
+            "monthly_payment": raw.get("monthly_payment") or None,
+            "mpg": raw.get("mpg") or None,
         }

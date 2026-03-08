@@ -15,6 +15,7 @@ class Settings(BaseSettings):
     GEMINI_API_KEY: str = ""
     GEMINI_MODEL: str = "gemini-2.5-flash"
     TAVILY_API_KEY: str = ""
+    VINAUDIT_API_KEY: str = ""
 
     SIDECAR_URL: str = "http://localhost:3000"
     SIDECAR_TOKEN: str = ""

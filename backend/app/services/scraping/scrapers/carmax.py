@@ -734,13 +734,17 @@ class CarMaxScraper:
     def normalize_listing(self, raw: dict[str, Any]) -> dict[str, Any]:
         """Normalize a raw listing dict into the standard schema.
 
+        Handles both the internal API format and the external CSV format
+        (columns: car_id, detail_url, image_url, monthly_payment,
+        miles_per_gallon, motor_type, title, raw_text, etc.).
+
         Ensures all expected fields exist, generates a unique ID,
         and tags the listing with source_name="CarMax".
         """
-        # Clean up price: might be string like "$24,999" or number
+        # Clean up price: might be string like "$43,998*" or number
         price = raw.get("price")
         if isinstance(price, str):
-            price = price.replace("$", "").replace(",", "").strip()
+            price = price.replace("$", "").replace(",", "").replace("*", "").strip()
             try:
                 price = float(price)
             except ValueError:
@@ -750,20 +754,26 @@ class CarMaxScraper:
         else:
             price = None
 
-        # Clean up mileage: might be string like "45,123 mi" or number
+        # Clean up mileage: handles "22K miles", "45,123 mi", or number
         mileage = raw.get("mileage")
         if isinstance(mileage, str):
-            mileage = (
-                mileage.lower()
-                .replace("mi", "")
-                .replace(",", "")
-                .replace("miles", "")
-                .strip()
-            )
-            try:
-                mileage = int(float(mileage))
-            except ValueError:
-                mileage = None
+            mileage_str = mileage.lower().strip()
+            # Handle "22K miles" format
+            k_match = re.match(r"([\d.]+)\s*k\b", mileage_str)
+            if k_match:
+                mileage = int(float(k_match.group(1)) * 1000)
+            else:
+                mileage_str = (
+                    mileage_str
+                    .replace("mi", "")
+                    .replace("miles", "")
+                    .replace(",", "")
+                    .strip()
+                )
+                try:
+                    mileage = int(float(mileage_str))
+                except ValueError:
+                    mileage = None
         elif isinstance(mileage, (int, float)):
             mileage = int(mileage)
         else:
@@ -781,29 +791,53 @@ class CarMaxScraper:
         else:
             year = None
 
+        # Source URL: prefer detail_url (CSV format) over source_url
+        source_url = raw.get("detail_url") or raw.get("source_url") or None
+
+        # Image URLs: handle singular image_url (CSV) or image_urls list
+        image_urls = raw.get("image_urls") or []
+        if not image_urls:
+            single_img = raw.get("image_url")
+            if single_img:
+                image_urls = [single_img]
+
+        # Fuel type: prefer motor_type (CSV) over fuel_type
+        fuel_type = raw.get("motor_type") or raw.get("fuel_type") or None
+
+        # Title: from CSV or build from year/make/model
+        title = raw.get("title") or None
+
+        # Use car_id from CSV if available for deterministic IDs
+        car_id = raw.get("car_id")
+        listing_id = f"carmax-{car_id}" if car_id else str(uuid.uuid4())
+
         return {
-            "id": str(uuid.uuid4()),
+            "id": listing_id,
             "vin": raw.get("vin") or None,
             "year": year,
             "make": raw.get("make") or None,
             "model": raw.get("model") or None,
             "trim": raw.get("trim") or None,
+            "title": title,
             "price": price,
+            "monthly_payment": raw.get("monthly_payment") or None,
             "mileage": mileage,
+            "mpg": raw.get("miles_per_gallon") or raw.get("mpg") or None,
             "location": raw.get("location") or None,
-            "source_url": raw.get("source_url") or None,
+            "source_url": source_url,
             "source_name": self.source_name,
             "sources": [
                 {
                     "name": self.source_name,
-                    "url": raw.get("source_url") or None,
+                    "url": source_url,
                     "price": price,
                 }
             ],
-            "image_urls": raw.get("image_urls") or [],
+            "image_urls": image_urls,
             "exterior_color": raw.get("exterior_color") or None,
             "interior_color": raw.get("interior_color") or None,
-            "fuel_type": raw.get("fuel_type") or None,
+            "fuel_type": fuel_type,
+            "motor_type": raw.get("motor_type") or None,
             "transmission": raw.get("transmission") or None,
             "drivetrain": raw.get("drivetrain") or None,
             "deal_rating": raw.get("deal_rating") or None,

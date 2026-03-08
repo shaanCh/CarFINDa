@@ -6,7 +6,7 @@ export function TopBar() {
     <div className="sticky top-0 z-50 bg-white/80 backdrop-blur-md border-b border-[var(--border)] w-full w-full">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
         <Link href="/" className="font-sora font-bold text-2xl text-[var(--text-primary)] tracking-tight hover:text-[var(--blue-dark)] transition-colors">
-          CarFINDa
+          Carvex
         </Link>
         
         <Link 

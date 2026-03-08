@@ -8,10 +8,33 @@ from typing import Optional
 # ---------------------------------------------------------------------------
 
 class SearchRequest(BaseModel):
-    """Incoming natural-language car search request."""
-    natural_language: str
-    location: str
+    """Car search request with optional natural-language and structured filters."""
+    natural_language: str = ""
+    location: str = ""
     radius_miles: int = 50
+    makes: list[str] = []
+    budget_min: Optional[float] = None
+    budget_max: Optional[float] = None
+    min_year: Optional[int] = None
+    max_mileage: Optional[int] = None
+    body_types: list[str] = []
+
+
+class Recommendation(BaseModel):
+    """A single recommendation from the LLM synthesizer."""
+    listing_id: str
+    rank: int
+    headline: str
+    explanation: str
+    strengths: list[str] = []
+    concerns: list[str] = []
+
+
+class Synthesis(BaseModel):
+    """LLM synthesis output for a set of search results."""
+    search_summary: str = ""
+    recommendations: list[Recommendation] = []
+    red_flags: list[str] = []
 
 
 class SearchResponse(BaseModel):
@@ -20,6 +43,7 @@ class SearchResponse(BaseModel):
     status: str = "pending"  # pending | scraping | scoring | complete
     listings: list["ListingWithScore"] = []
     total_results: int = 0
+    synthesis: Optional[Synthesis] = None
 
 
 # ---------------------------------------------------------------------------
@@ -34,8 +58,11 @@ class Listing(BaseModel):
     make: str
     model: str
     trim: Optional[str] = None
+    title: Optional[str] = None
     price: float
+    monthly_payment: Optional[str] = None
     mileage: Optional[int] = None
+    mpg: Optional[str] = None
     location: Optional[str] = None
     source_url: Optional[str] = None
     source_name: Optional[str] = None
@@ -43,6 +70,7 @@ class Listing(BaseModel):
     exterior_color: Optional[str] = None
     interior_color: Optional[str] = None
     fuel_type: Optional[str] = None
+    motor_type: Optional[str] = None
     transmission: Optional[str] = None
     drivetrain: Optional[str] = None
     created_at: datetime = Field(default_factory=datetime.utcnow)
@@ -99,12 +127,74 @@ class ChatRequest(BaseModel):
     message: str
     listing_ids: list[str] = []
     session_id: Optional[str] = None
+    search_session_id: Optional[str] = None
+    context: Optional[dict] = None
 
 
 class ChatResponse(BaseModel):
     """Reply from the LLM assistant."""
     message: str
     session_id: Optional[str] = None
+
+
+# ---------------------------------------------------------------------------
+# Negotiation
+# ---------------------------------------------------------------------------
+
+class NegotiationRequest(BaseModel):
+    """Request to generate a negotiation strategy for a listing."""
+    listing_id: str
+    listing: Optional[dict] = None
+    score: Optional[dict] = None
+    data: Optional[dict] = None
+    preferences: Optional[dict] = None
+    competing_listings: list[dict] = []
+
+
+class FairPrice(BaseModel):
+    """Fair price range breakdown."""
+    low: float
+    mid: float
+    high: float
+    explanation: str
+
+
+class Offer(BaseModel):
+    """A suggested price offer."""
+    amount: float
+    reasoning: str
+
+
+class LeveragePoint(BaseModel):
+    """A data-backed negotiation leverage point."""
+    category: str
+    point: str
+    impact: str
+
+
+class QuestionToAsk(BaseModel):
+    """A question to ask the seller, with rationale."""
+    question: str
+    why: str
+
+
+class CompetingListing(BaseModel):
+    """A competing listing to reference during negotiation."""
+    description: str
+    price: float
+    advantage: str
+
+
+class NegotiationResponse(BaseModel):
+    """Full negotiation strategy output."""
+    opening_dm: str
+    fair_price: FairPrice
+    opening_offer: Offer
+    leverage_points: list[LeveragePoint] = []
+    questions_to_ask: list[QuestionToAsk] = []
+    competing_listings: list[CompetingListing] = []
+    walk_away_price: Offer
+    negotiation_tips: list[str] = []
 
 
 # ---------------------------------------------------------------------------

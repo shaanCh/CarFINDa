@@ -2,10 +2,11 @@
 Composite score calculator for vehicle listings.
 
 Combines safety ratings, reliability data, value analysis, fuel efficiency,
-and recall status into a single 0-100 composite score with a human-readable
-breakdown.
+ownership cost, and recall status into a single 0-100 composite score with
+a human-readable breakdown.
 """
 
+import math
 from dataclasses import dataclass, field
 
 
@@ -20,6 +21,7 @@ class ListingScore:
     reliability_score: float
     value_score: float
     efficiency_score: float
+    ownership_cost_score: float
     recall_score: float
 
     # Human-readable breakdown
@@ -33,44 +35,42 @@ def calculate_composite_score(
     estimated_value: float,
     mpg_combined: float | None,
     open_recalls: int,
+    annual_ownership_cost: float | None = None,
 ) -> ListingScore:
     """
     Calculate a composite score (0-100) from individual data points.
 
     Weights:
-        - Safety:     25%  (NHTSA star rating)
-        - Reliability: 25%  (NHTSA complaint count)
-        - Value:      25%  (listing price vs estimated market value)
-        - Efficiency: 15%  (EPA combined MPG)
-        - Recall:     10%  (open recall penalty)
+        - Safety:          20%  (NHTSA star rating)
+        - Reliability:     20%  (NHTSA complaint count)
+        - Value:           25%  (listing price vs estimated market value)
+        - Ownership Cost:  15%  (5-year projected annual cost)
+        - Efficiency:      10%  (EPA combined MPG)
+        - Recall:          10%  (open recall penalty)
 
     Args:
-        safety_rating:   NHTSA overall star rating (1-5), or None if unavailable.
-        complaint_count: Number of NHTSA consumer complaints.
-        price:           Listing/asking price in dollars.
-        estimated_value: Estimated fair market value in dollars.
-        mpg_combined:    EPA combined MPG, or None if unavailable.
-        open_recalls:    Number of open (unresolved) recalls.
+        safety_rating:         NHTSA overall star rating (1-5), or None.
+        complaint_count:       Number of NHTSA consumer complaints.
+        price:                 Listing/asking price in dollars.
+        estimated_value:       Estimated fair market value in dollars.
+        mpg_combined:          EPA combined MPG, or None.
+        open_recalls:          Number of open (unresolved) recalls.
+        annual_ownership_cost: Projected average annual cost of ownership, or None.
 
     Returns:
         ListingScore with composite score, component scores, and breakdown.
     """
-    # ----- Safety (25%) -----
+    # ----- Safety (20%) -----
     if safety_rating is not None and safety_rating > 0:
         safety_score = (safety_rating / 5.0) * 100.0
         safety_explanation = (
             f"{safety_rating}/5 stars -> {safety_score:.0f}/100"
         )
     else:
-        # Default to a neutral 60 when no rating is available
         safety_score = 60.0
         safety_explanation = "No NHTSA rating available; using default 60/100"
 
-    # ----- Reliability (25%) -----
-    # Logarithmic scaling: hundreds of complaints across millions of units
-    # is normal for popular models. Scale: 0 = 100, 50 = 85, 200 = 65,
-    # 500 = 45, 1000 = 30, 2000+ = ~15.
-    import math
+    # ----- Reliability (20%) -----
     if complaint_count == 0:
         reliability_score = 100.0
         reliability_explanation = "0 complaints -> 100/100"
@@ -87,12 +87,10 @@ def calculate_composite_score(
 
         if price_ratio <= 1.0:
             # Price at or below estimated value — great deal
-            # Linear from 100 (price=0) to 75 (price=value)
             value_score = 100.0 - (price_ratio * 25.0)
         else:
             # Price above estimated value
-            # At 1.0 ratio: 75, at 1.1 ratio: 50, linear beyond
-            overpay_pct = (price_ratio - 1.0) * 100.0  # percent overpaying
+            overpay_pct = (price_ratio - 1.0) * 100.0
             value_score = max(0.0, 75.0 - (overpay_pct * 2.5))
 
         if price < estimated_value:
@@ -113,23 +111,45 @@ def calculate_composite_score(
                 f"{value_score:.0f}/100"
             )
     else:
-        # Can't assess value without both numbers
         value_score = 50.0
         value_explanation = "Insufficient data for value comparison; using default 50/100"
 
-    # ----- Efficiency (15%) -----
-    if mpg_combined is not None and mpg_combined > 0:
-        efficiency_score = min(100.0, (mpg_combined / 40.0) * 100.0)
-        efficiency_explanation = (
-            f"{mpg_combined:.1f} combined MPG (40 MPG = 100) -> "
-            f"{efficiency_score:.0f}/100"
+    # ----- Ownership Cost (15%) -----
+    # Scale: $4k/yr = 100, $7k/yr = 70, $10k/yr = 40, $13k/yr+ = 0
+    if annual_ownership_cost is not None and annual_ownership_cost > 0:
+        ownership_cost_score = max(
+            0.0, min(100.0, 100.0 - ((annual_ownership_cost - 4000) / 90))
         )
+        ownership_cost_explanation = (
+            f"${annual_ownership_cost:,.0f}/yr avg ownership cost -> "
+            f"{ownership_cost_score:.0f}/100"
+        )
+    else:
+        ownership_cost_score = 50.0
+        ownership_cost_explanation = (
+            "No ownership cost data (VIN required); using default 50/100"
+        )
+
+    # ----- Efficiency (10%) -----
+    if mpg_combined is not None and mpg_combined > 0:
+        # Cap MPGe at 50 so EVs don't auto-max this score
+        capped_mpg = min(mpg_combined, 50.0)
+        efficiency_score = min(100.0, (capped_mpg / 40.0) * 100.0)
+        if mpg_combined > 50:
+            efficiency_explanation = (
+                f"{mpg_combined:.0f} MPGe (capped at 50 for scoring) -> "
+                f"{efficiency_score:.0f}/100"
+            )
+        else:
+            efficiency_explanation = (
+                f"{mpg_combined:.1f} combined MPG (40 MPG = 100) -> "
+                f"{efficiency_score:.0f}/100"
+            )
     else:
         efficiency_score = 50.0
         efficiency_explanation = "No MPG data available; using default 50/100"
 
     # ----- Recall Penalty (10%) -----
-    # Gentler scaling: 1 recall = 85, 2 = 70, 3 = 55, 4+ = 40 minimum
     recall_score = max(40.0, 100.0 - (open_recalls * 15.0))
     if open_recalls == 0:
         recall_score = 100.0
@@ -142,10 +162,11 @@ def calculate_composite_score(
 
     # ----- Composite -----
     composite_raw = (
-        safety_score * 0.25
-        + reliability_score * 0.25
+        safety_score * 0.20
+        + reliability_score * 0.20
         + value_score * 0.25
-        + efficiency_score * 0.15
+        + ownership_cost_score * 0.15
+        + efficiency_score * 0.10
         + recall_score * 0.10
     )
     composite = max(0, min(100, round(composite_raw)))
@@ -153,12 +174,12 @@ def calculate_composite_score(
     breakdown = {
         "safety": {
             "score": round(safety_score, 1),
-            "weight": "25%",
+            "weight": "20%",
             "explanation": safety_explanation,
         },
         "reliability": {
             "score": round(reliability_score, 1),
-            "weight": "25%",
+            "weight": "20%",
             "explanation": reliability_explanation,
         },
         "value": {
@@ -166,9 +187,14 @@ def calculate_composite_score(
             "weight": "25%",
             "explanation": value_explanation,
         },
+        "ownership_cost": {
+            "score": round(ownership_cost_score, 1),
+            "weight": "15%",
+            "explanation": ownership_cost_explanation,
+        },
         "efficiency": {
             "score": round(efficiency_score, 1),
-            "weight": "15%",
+            "weight": "10%",
             "explanation": efficiency_explanation,
         },
         "recall": {
@@ -179,8 +205,8 @@ def calculate_composite_score(
         "composite": {
             "score": composite,
             "formula": (
-                "0.25*safety + 0.25*reliability + 0.25*value "
-                "+ 0.15*efficiency + 0.10*recall"
+                "0.20*safety + 0.20*reliability + 0.25*value "
+                "+ 0.15*ownership + 0.10*efficiency + 0.10*recall"
             ),
         },
     }
@@ -191,6 +217,7 @@ def calculate_composite_score(
         reliability_score=round(reliability_score, 1),
         value_score=round(value_score, 1),
         efficiency_score=round(efficiency_score, 1),
+        ownership_cost_score=round(ownership_cost_score, 1),
         recall_score=round(recall_score, 1),
         breakdown=breakdown,
     )

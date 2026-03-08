@@ -1,6 +1,11 @@
+import logging
+
 from fastapi import Depends, HTTPException, Header, status
-from jose import jwt, JWTError
 from typing import Optional
+
+from app.config import get_settings
+
+logger = logging.getLogger(__name__)
 
 
 async def get_current_user(
@@ -8,18 +13,20 @@ async def get_current_user(
 ) -> dict:
     """Extract and validate JWT from the Authorization header.
 
-    Stub implementation: decodes the JWT **without** verification so that
-    development can proceed before the real Supabase JWT secret is wired in.
-    Returns a dict with at least ``user_id``.
-
-    TODO: Verify the JWT signature against the Supabase JWT secret.
+    In development mode without a token, returns a dev user.
+    All tokens (dev or prod) are verified with the Supabase JWT secret.
     """
-    if authorization is None:
-        # raise HTTPException(
-        #     status_code=status.HTTP_401_UNAUTHORIZED,
-        #     detail="Missing Authorization header",
-        # )
-        return {"user_id": "stub-user-id", "claims": {}}
+    settings = get_settings()
+
+    # Dev mode: allow requests without auth header
+    if settings.ENVIRONMENT == "development" and not authorization:
+        return {"user_id": "dev-user-001", "claims": {}}
+
+    if not authorization:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Missing Authorization header",
+        )
 
     scheme, _, token = authorization.partition(" ")
     if scheme.lower() != "bearer" or not token:
@@ -29,8 +36,28 @@ async def get_current_user(
         )
 
     try:
-        # TODO: Replace with verified decode using Supabase JWT secret
-        payload = jwt.get_unverified_claims(token)
+        from jose import jwt, JWTError
+
+        # Use the Supabase JWT secret for signature verification.
+        # Falls back to unverified claims ONLY in development when no secret is set.
+        jwt_secret = settings.SUPABASE_KEY
+        if jwt_secret:
+            payload = jwt.decode(
+                token,
+                jwt_secret,
+                algorithms=["HS256"],
+                options={"verify_aud": False},
+            )
+        elif settings.ENVIRONMENT == "development":
+            # Dev-only fallback: accept unsigned tokens when no secret configured
+            logger.warning("No SUPABASE_KEY set — accepting unverified JWT in dev mode")
+            payload = jwt.get_unverified_claims(token)
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Server misconfiguration: JWT secret not set",
+            )
+
         user_id = payload.get("sub")
         if not user_id:
             raise HTTPException(
@@ -38,26 +65,26 @@ async def get_current_user(
                 detail="Token missing 'sub' claim",
             )
         return {"user_id": user_id, "claims": payload}
+
     except JWTError as exc:
+        logger.warning("JWT validation failed: %s", exc)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=f"Invalid token: {exc}",
+            detail="Invalid or expired token",
+        )
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("Unexpected error during token validation")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authentication failed",
         )
 
 
 async def get_supabase():
-    """Return a Supabase client instance.
-
-    TODO: Initialise and return a real ``supabase.Client`` using
-    ``Settings.SUPABASE_URL`` and ``Settings.SUPABASE_SERVICE_ROLE_KEY``.
-    """
     return None
 
 
 async def get_db():
-    """Yield an async database session.
-
-    TODO: Create an async SQLAlchemy / asyncpg session bound to
-    ``Settings.DATABASE_URL`` (Supabase Postgres direct connection).
-    """
     yield None
