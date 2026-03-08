@@ -5,16 +5,17 @@ import { useRouter } from 'next/navigation';
 import Image from 'next/image';
 
 const TYPEWRITER_PROMPTS = [
-  'Find me a reliable SUV under $25k and negotiate the price',
+  'Mid-size SUV under $25k with less than 30k miles',
   'Score and rank electric cars under $35k near me',
-  'Auto-DM Marketplace sellers for Tacomas under $20k',
-  'Find a safe, fuel-efficient commuter and handle outreach',
+  'Reliable sedan under $15k, under 50k miles',
+  'Truck under $35k, 2018 or newer',
 ];
 
 const CHIP_PROMPTS = [
-  'Negotiate a Civic under $15k',
-  'Auto-DM Marketplace sellers',
-  'Score & rank nearby trucks',
+  'Mid-size SUV under $25k, less than 30k miles',
+  'Sedan under $15k with under 50k miles',
+  'Truck under $35k, 2018 or newer',
+  'Compact car under $20k, low mileage',
 ];
 
 const FILTER_OPTIONS = {

@@ -5,6 +5,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 
 from app.dependencies import get_current_user, get_listing_db
+from app.services.db import parse_mileage, parse_price
 from app.models.schemas import (
     Listing,
     ListingScore,
@@ -30,8 +31,8 @@ def _db_row_to_listing_with_score(row: dict) -> ListingWithScore:
         model=listing_data.get("model") or "Unknown",
         trim=listing_data.get("trim"),
         title=listing_data.get("title"),
-        price=listing_data.get("price") or 0.0,
-        mileage=listing_data.get("mileage"),
+        price=parse_price(listing_data.get("price")),
+        mileage=parse_mileage(listing_data.get("mileage")),
         location=listing_data.get("location"),
         source_url=listing_data.get("source_url"),
         source_name=listing_data.get("source_name"),

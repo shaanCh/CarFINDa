@@ -140,15 +140,16 @@ async def run_scraping_pipeline(
             return await _run_single_scraper(scraper, fset)
 
     # Build tasks — each expanded filter set gets its own scraper instance
+    # Pass browser client for fallback when httpx gets 403 / StreamReset
     tasks = []
     for fset in filter_sets:
         tasks.append(_run_with_limit(
-            CarMaxScraper(browser=None, profile="carfinda-carmax",
+            CarMaxScraper(browser=browser, profile="carfinda-carmax",
                           http_client=shared_http),
             fset,
         ))
         tasks.append(_run_with_limit(
-            CarsComScraper(browser=None, profile="carfinda-carscom",
+            CarsComScraper(browser=browser, profile="carfinda-carscom",
                            http_client=shared_http),
             fset,
         ))

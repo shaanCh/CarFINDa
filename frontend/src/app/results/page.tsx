@@ -94,11 +94,6 @@ function TopPickCard({ car, rank }: { car: Car; rank: number }) {
           )}
         </div>
 
-        <p className="text-xs text-[var(--text-secondary)] mb-4">
-          {car.source_name || 'Dealer'}
-          {car.location && <> &middot; {car.location}</>}
-        </p>
-
         {/* Score breakdown rings */}
         {car.scoreBreakdown && (
           <div className="flex gap-4 mb-4">

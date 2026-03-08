@@ -11,6 +11,7 @@ keeps working even if the DB is unreachable.
 
 import json
 import logging
+import re
 import uuid
 from datetime import datetime, timezone, timedelta
 from typing import Any, Optional
@@ -20,6 +21,59 @@ import httpx
 logger = logging.getLogger(__name__)
 
 _BATCH_SIZE = 50
+
+
+def parse_price(value: Any) -> float:
+    """Parse price from DB value (e.g. '$21,998*', '21998', 21998.0) to float.
+    Returns 0.0 if unparseable.
+    """
+    if value is None or value == "":
+        return 0.0
+    if isinstance(value, (int, float)):
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return 0.0
+    s = str(value).strip()
+    if not s:
+        return 0.0
+    num_str = re.sub(r"[^0-9.]", "", s)
+    if num_str:
+        try:
+            return float(num_str)
+        except (TypeError, ValueError):
+            pass
+    return 0.0
+
+
+def parse_mileage(value: Any) -> Optional[int]:
+    """Parse mileage from DB text (e.g. '22k miles', '45,123 mi') to int.
+    Handles 'k' suffix as thousands: '22k' -> 22000.
+    """
+    if value is None or value == "":
+        return None
+    if isinstance(value, (int, float)):
+        return int(value)
+    s = str(value).lower().strip()
+    if not s:
+        return None
+    # Match "22k" or "22K" (thousands)
+    k_match = re.match(r"([\d,.]+)\s*k", s)
+    if k_match:
+        num_str = re.sub(r"[^0-9.]", "", k_match.group(1))
+        if num_str:
+            try:
+                return int(float(num_str) * 1000)
+            except (TypeError, ValueError):
+                pass
+    # Plain number: "45,123 mi" or "45123"
+    num_str = re.sub(r"[^0-9]", "", s)
+    if num_str:
+        try:
+            return int(num_str)
+        except (TypeError, ValueError):
+            pass
+    return None
 
 
 class ListingDB:
@@ -344,6 +398,8 @@ class ListingDB:
                 body["p_max_mileage"] = int(filters["max_mileage"])
             if filters.get("location"):
                 body["p_location"] = str(filters["location"]).strip()
+            if filters.get("body_types"):
+                body["p_body_types"] = [bt.strip() for bt in filters["body_types"] if bt]
 
             resp = await self._client.post(
                 f"{self._rest_url}/rpc/search_listings_filtered",
@@ -478,6 +534,8 @@ class ListingDB:
                 listing = listings_by_id.get(lid)
                 if not listing:
                     continue
+                listing = dict(listing)
+                listing["mileage"] = parse_mileage(listing.get("mileage"))
                 score = scores_by_id.get(lid)
                 results.append({
                     **listing,
@@ -646,13 +704,14 @@ def _listing_to_row(listing: dict) -> dict:
 
     Matches Supabase schema: id, vin, year, make, model, title, price,
     mileage, location, detail_url, image_url, drivetrain, motor_type, transmission.
+    Always returns the same keys so PostgREST batch insert (PGRST102) succeeds.
     """
     imgs = listing.get("image_urls") or []
     price_val = listing.get("price")
     mileage_val = listing.get("mileage")
     raw_id = listing.get("id") or ""
     db_id = raw_id if _is_valid_uuid(raw_id) else str(uuid.uuid4())
-    row = {
+    return {
         "id": db_id,
         "vin": listing.get("vin") or None,
         "year": listing.get("year") or 0,
@@ -668,7 +727,6 @@ def _listing_to_row(listing: dict) -> dict:
         "motor_type": listing.get("fuel_type") or listing.get("motor_type"),
         "transmission": listing.get("transmission"),
     }
-    return {k: v for k, v in row.items() if v is not None or k in ("id", "vin", "year", "make", "model", "title")}
 
 
 def _db_score_to_dict(score_row: dict) -> dict:

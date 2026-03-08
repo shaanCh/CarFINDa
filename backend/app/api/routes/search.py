@@ -21,7 +21,7 @@ from app.models.schemas import (
 from app.services.scraping.pipeline import run_scraping_pipeline
 from app.services.scoring.pipeline import score_listings
 from app.services.llm.intake_agent import parse_preferences
-from app.services.llm.synthesizer import synthesize_recommendations
+from app.services.llm.synthesizer import synthesize_recommendations, _fallback_synthesis
 
 logger = logging.getLogger(__name__)
 
@@ -114,7 +114,8 @@ async def create_search(
             )
 
     # ── Step 2: Query listings table first (DB-first) ──
-    MIN_DB_RESULTS = 10
+    # When DB returns < 5 results, fall back to web scraping to find more listings.
+    MIN_DB_RESULTS = 5
     if db:
         try:
             db_results = await db.search_listings(filters, limit=100)
@@ -200,16 +201,32 @@ async def create_search(
     logger.info("Scoring pipeline scored %d listings", len(scored_listings))
 
     # Run DB persistence and LLM synthesis concurrently
-    synthesis_coro = _run_synthesis(
-        scored_listings,
-        request.natural_language or _describe_filters(filters),
-        nl_preferences or filters,
-        settings,
+    # Synthesis has 10s timeout — if Gemini is slow, use instant fallback
+    _SYNTHESIS_TIMEOUT = 10.0
+    synthesis_coro = asyncio.wait_for(
+        _run_synthesis(
+            scored_listings,
+            request.natural_language or _describe_filters(filters),
+            nl_preferences or filters,
+            settings,
+        ),
+        timeout=_SYNTHESIS_TIMEOUT,
     )
     db_persist_coro = _persist_scores_and_links(
         db, scored_listings, persisted_ids, session_id,
     )
-    synthesis, _ = await asyncio.gather(synthesis_coro, db_persist_coro)
+    try:
+        synthesis, _ = await asyncio.gather(synthesis_coro, db_persist_coro)
+    except asyncio.TimeoutError:
+        logger.warning("Synthesis timed out after %.1fs, using instant fallback", _SYNTHESIS_TIMEOUT)
+        top = sorted(
+            scored_listings,
+            key=lambda x: x.get("score", {}).get("composite_score", 0),
+            reverse=True,
+        )[:20]
+        synthesis = _fallback_synthesis(top, max_recommendations=5)
+        # DB persist may have been cancelled by gather; run it now
+        await _persist_scores_and_links(db, scored_listings, persisted_ids, session_id)
     _t3 = _time.monotonic()
     logger.info("Search complete in %.1fs total (scrape: %.1fs, score+synth: %.1fs)", _t3 - _t0, _t2 - _t1, _t3 - _t2)
 

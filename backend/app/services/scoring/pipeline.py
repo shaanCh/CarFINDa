@@ -276,14 +276,25 @@ async def _score_listings_fast(listings: list[dict]) -> list[dict]:
 
     logger.info("Fast-scored %d listings (local only, no API calls)", len(scored))
 
-    # --- Phase 2: Enrich ALL listings with NHTSA + EPA (free APIs) --------
-    # Gov APIs are free and we batch by unique (make, model, year), so even
-    # 100 listings typically produce only 15-20 unique configs (~4 calls each).
+    # --- Phase 2: Enrich only top listings with NHTSA + EPA (free APIs) -----
+    # Limit to configs from top 25 by local score to reduce API calls and latency.
+    # Gov APIs are ~4 calls per config; capping at 25 configs keeps scoring ~2-4s.
+    _MAX_ENRICH_CONFIGS = 25
+    _TOP_N_FOR_ENRICH = 30
+
+    top_for_enrich = sorted(
+        scored,
+        key=lambda x: x.get("score", {}).get("composite_score", 0),
+        reverse=True,
+    )[:_TOP_N_FOR_ENRICH]
+
     all_configs: set[tuple[str, str, int]] = set()
-    for item in scored:
+    for item in top_for_enrich:
         m, mo, y = item.get("make", ""), item.get("model", ""), item.get("year", 0)
         if m and mo and y:
             all_configs.add((m, mo, y))
+            if len(all_configs) >= _MAX_ENRICH_CONFIGS:
+                break
 
     if not all_configs:
         return scored

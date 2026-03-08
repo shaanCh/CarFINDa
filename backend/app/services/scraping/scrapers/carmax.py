@@ -133,13 +133,13 @@ class CarMaxScraper:
 
     def __init__(
         self,
-        browser: BrowserClient,
+        browser: Optional[BrowserClient] = None,
         profile: str = "carfinda-carmax",
         http_client: Optional[httpx.AsyncClient] = None,
     ):
         """
         Args:
-            browser:     BrowserClient instance for the Playwright sidecar.
+            browser:     BrowserClient for Playwright sidecar fallback when API returns 403.
             profile:     Sidecar browser profile name for session isolation.
             http_client: Optional shared httpx.AsyncClient for the API path.
                          If not provided, one is created lazily via

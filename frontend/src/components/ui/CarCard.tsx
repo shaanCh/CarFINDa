@@ -68,11 +68,6 @@ export function CarCard({ car }: CarCardProps) {
           {miles && <span className="text-sm text-[var(--text-secondary)]">{miles}</span>}
         </div>
 
-        <p className="text-xs text-[var(--text-secondary)] mb-3">
-          {car.source_name || (car.sellerType === 'private' ? 'Private' : 'Dealer')}
-          {car.location && <> &middot; {car.location}</>}
-        </p>
-
         {car.explanation && (
           <p className="text-xs text-[var(--text-secondary)] leading-relaxed mb-3 line-clamp-2">
             {car.explanation}

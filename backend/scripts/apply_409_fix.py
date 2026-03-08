@@ -35,6 +35,10 @@ MIGRATIONS = [
     "004_fix_409_conflicts.sql",
     "005_fix_search_listings_rpc_columns.sql",
     "006_align_with_actual_listings_schema.sql",
+    "007_parse_mileage_with_k.sql",
+    "008_body_type_filter.sql",
+    "009_listings_vin_unique_for_upsert.sql",
+    "010_listings_id_default.sql",
 ]
 
 try:

@@ -186,7 +186,7 @@ def _build_synthesis_context(
 
     parts.append(f"\n## Scored Listings ({len(scored_listings)} total)\n")
 
-    for i, listing in enumerate(scored_listings[:30], 1):  # Cap context at 30
+    for i, listing in enumerate(scored_listings[:20], 1):  # Cap at 20 for faster LLM response
         score = listing.get("score", {})
         data = listing.get("data", {})
 
