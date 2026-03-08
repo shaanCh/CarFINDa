@@ -294,19 +294,10 @@ async def facebook_search(
 ):
     """Search Facebook Marketplace for vehicle listings.
 
-    Starts the browser, logs in if credentials are configured,
-    searches with the provided filters, and returns listings.
+    The frontend handles login separately before calling this endpoint.
+    Browser profile cookies persist, so no login is needed here.
     """
-    settings = get_settings()
-    logged_in = False
-
     try:
-        # Auto-login
-        if settings.FB_EMAIL and settings.FB_PASSWORD:
-            logged_in = await fb_scraper.ensure_logged_in(
-                settings.FB_EMAIL, settings.FB_PASSWORD,
-            )
-
         # Build filters for FB scraper
         # If we only have a natural-language query, parse it into structured
         # filters since FB Marketplace doesn't handle NL queries well.
@@ -357,7 +348,7 @@ async def facebook_search(
             success=True,
             listings=listings,
             total=len(listings),
-            logged_in=logged_in,
+            logged_in=True,
         )
 
     except Exception as exc:
