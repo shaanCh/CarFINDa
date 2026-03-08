@@ -16,6 +16,7 @@ class Settings(BaseSettings):
     GEMINI_MODEL: str = "gemini-2.5-flash"
     TAVILY_API_KEY: str = ""
     VINAUDIT_API_KEY: str = ""
+    AUTO_DEV_API_KEY: str = ""
 
     FB_EMAIL: str = ""
     FB_PASSWORD: str = ""
@@ -28,6 +29,8 @@ class Settings(BaseSettings):
     CAPTCHA_SOLVER_TIMEOUT_SECONDS: int = 120
 
     DATABASE_URL: str = ""
+
+    AGENTMAIL_API_KEY: str = ""
 
     ENVIRONMENT: str = "development"
 

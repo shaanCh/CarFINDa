@@ -48,8 +48,7 @@ def _db_row_to_listing_with_score(row: dict) -> ListingWithScore:
         reliability=float(score_data.get("reliability_score", 0)),
         value=float(score_data.get("value_score", 0)),
         efficiency=float(score_data.get("efficiency_score", 0)),
-        ownership_cost=float(score_data.get("ownership_cost_score", 50)),
-        recall_penalty=float(score_data.get("recall_penalty", 0)),
+        recall=float(score_data.get("recall_score", score_data.get("recall_penalty", 0))),
         composite=float(score_data.get("composite_score", 0)),
         breakdown=score_data.get("breakdown") or {},
     )

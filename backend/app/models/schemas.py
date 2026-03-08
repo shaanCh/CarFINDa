@@ -82,16 +82,25 @@ class ListingScore(BaseModel):
     reliability: float = 0.0
     value: float = 0.0
     efficiency: float = 0.0
-    ownership_cost: float = 0.0
-    recall_penalty: float = 0.0
+    recall: float = 0.0
     composite: float = 0.0
     breakdown: dict = {}
 
 
+class DealInfo(BaseModel):
+    """Deal rating and cross-source price comparison."""
+    rating: str = "Unknown"  # Great Deal, Good Deal, Fair Price, Above Market, Overpriced
+    savings: float = 0.0  # $ below market (positive = below, negative = above)
+    savings_pct: float = 0.0
+    source_badge: Optional[str] = None  # Original source deal badge
+    cross_source: Optional[dict] = None  # Cross-source price comparison
+
+
 class ListingWithScore(BaseModel):
-    """A listing combined with its computed score."""
+    """A listing combined with its computed score and deal info."""
     listing: Listing
     score: ListingScore
+    deal: Optional[DealInfo] = None
 
 
 class ListingResponse(BaseModel):
@@ -324,3 +333,41 @@ class MonitorResponse(BaseModel):
     frequency: str
     status: str = "active"
     created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+# ---------------------------------------------------------------------------
+# Email Notifications (AgentMail)
+# ---------------------------------------------------------------------------
+
+class EmailSubscribeRequest(BaseModel):
+    """Subscribe to email alerts for a listing or search."""
+    email: str = Field(..., description="User email address")
+    alert_type: str = Field("negotiation", description="'negotiation', 'price_drop', or 'new_matches'")
+    listing: Optional[dict] = Field(None, description="Listing to watch (for negotiation/price_drop)")
+    search_filters: Optional[dict] = Field(None, description="Search filters (for new_matches)")
+    car_title: Optional[str] = None
+    car_price: Optional[float] = None
+    image_url: Optional[str] = None
+
+
+class EmailSubscribeResponse(BaseModel):
+    """Confirmation of email alert subscription."""
+    success: bool
+    agent_email: str = ""
+    subscription_id: str = ""
+    message: str = ""
+
+
+class SendOutreachSummaryRequest(BaseModel):
+    """Request to email an outreach summary to the user."""
+    email: str
+    search_query: str
+    messages_sent: int
+    listings: list[dict] = []
+
+
+class EmailNotificationResponse(BaseModel):
+    """Generic email send result."""
+    success: bool
+    message_id: Optional[str] = None
+    error: Optional[str] = None

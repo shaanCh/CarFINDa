@@ -6,6 +6,7 @@ from app.api.routes.monitor import router as monitor_router
 from app.api.routes.outreach import router as outreach_router
 from app.api.routes.credentials import router as credentials_router
 from app.api.routes.negotiate import router as negotiate_router
+from app.api.routes.notifications import router as notifications_router
 
 all_routers = [
     search_router,
@@ -16,4 +17,5 @@ all_routers = [
     outreach_router,
     credentials_router,
     negotiate_router,
+    notifications_router,
 ]

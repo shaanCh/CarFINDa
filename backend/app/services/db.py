@@ -62,6 +62,9 @@ class ListingDB:
         for i in range(0, len(with_vin), _BATCH_SIZE):
             batch = with_vin[i : i + _BATCH_SIZE]
             rows = [_listing_to_row(l) for l in batch]
+            # Strip id so PostgREST can upsert on VIN without PK conflicts
+            for row in rows:
+                row.pop("id", None)
             try:
                 resp = await self._client.post(
                     f"{self._rest_url}/listings",
@@ -199,23 +202,37 @@ class ListingDB:
         self, user_id: str, query_text: str, parsed_filters: dict,
     ) -> str:
         """Create a new search session and return its ID."""
-        session_id = str(uuid.uuid4())
+        # user_id must exist in the users table (FK constraint).
+        # For anonymous/dev users, skip session creation entirely.
+        if not _is_valid_uuid(user_id):
+            logger.debug("Skipping search session for non-UUID user: %s", user_id)
+            return str(uuid.uuid4())
         try:
             resp = await self._client.post(
                 f"{self._rest_url}/search_sessions",
                 json={
-                    "id": session_id,
                     "user_id": user_id,
                     "query_text": query_text,
                     "parsed_filters": parsed_filters,
                     "status": "scraping",
-                    "created_at": datetime.now(timezone.utc).isoformat(),
+                },
+                headers={
+                    **self._headers,
+                    "Prefer": "return=representation",
                 },
             )
+            if resp.status_code >= 400:
+                logger.error(
+                    "Search session insert failed %d: %s",
+                    resp.status_code, resp.text[:500],
+                )
             resp.raise_for_status()
+            rows = resp.json()
+            if rows:
+                return rows[0]["id"]
         except Exception as exc:
             logger.error("Failed to create search session: %s", exc)
-        return session_id
+        return str(uuid.uuid4())
 
     async def complete_search_session(
         self, session_id: str, results_count: int,
@@ -242,9 +259,17 @@ class ListingDB:
         if not listing_ids:
             return
 
+        # Deduplicate listing IDs (same listing can appear from multiple sources)
+        seen: set[str] = set()
+        unique_ids: list[str] = []
+        for lid in listing_ids:
+            if lid not in seen:
+                seen.add(lid)
+                unique_ids.append(lid)
+
         rows = [
             {"search_id": search_id, "listing_id": lid, "rank": rank}
-            for rank, lid in enumerate(listing_ids, 1)
+            for rank, lid in enumerate(unique_ids, 1)
         ]
         for i in range(0, len(rows), _BATCH_SIZE):
             batch = rows[i : i + _BATCH_SIZE]
@@ -256,7 +281,8 @@ class ListingDB:
                 )
                 resp.raise_for_status()
             except Exception as exc:
-                logger.error("Failed to link search listings: %s", exc)
+                # 409 = duplicate key (expected on re-scrape), not critical
+                logger.debug("Link search listings batch: %s", exc)
 
     # ------------------------------------------------------------------
     # Cache lookup
@@ -360,24 +386,101 @@ class ListingDB:
     async def record_price_changes(
         self, listing_id: str, price: float, source_name: str,
     ) -> None:
-        """Record a price observation in the price_history table."""
+        """Record a price observation in the price_history table.
+
+        Only call this for listings that have been successfully upserted
+        into the listings table (FK constraint: listing_id -> listings.id).
+        """
         if not price or price <= 0:
             return
         try:
             resp = await self._client.post(
                 f"{self._rest_url}/price_history",
                 json={
-                    "id": str(uuid.uuid4()),
                     "listing_id": listing_id,
                     "price": float(price),
-                    "source_name": source_name,
+                    "source_name": source_name or "unknown",
                     "recorded_at": datetime.now(timezone.utc).isoformat(),
                 },
                 headers={**self._headers, "Prefer": "return=minimal"},
             )
             resp.raise_for_status()
         except Exception as exc:
-            logger.error("Failed to record price history: %s", exc)
+            logger.debug("Price history insert skipped for %s: %s", listing_id, exc)
+
+    # ------------------------------------------------------------------
+    # Market value cache
+    # ------------------------------------------------------------------
+
+    async def get_cached_market_values(
+        self, configs: list[tuple[str, str, int]], max_age_hours: int = 72,
+    ) -> dict[tuple[str, str, int], dict]:
+        """Fetch cached Tavily market values for (make, model, year) tuples.
+
+        Returns a mapping of (make, model, year) -> value dict for any
+        configs found in the cache within max_age_hours.
+        """
+        if not configs:
+            return {}
+
+        cutoff = (
+            datetime.now(timezone.utc) - timedelta(hours=max_age_hours)
+        ).isoformat()
+
+        result: dict[tuple[str, str, int], dict] = {}
+
+        # Build OR filter: (make.eq.X,model.eq.Y,year.eq.Z)
+        # PostgREST or() filter — batch in groups to avoid URL length limits
+        for i in range(0, len(configs), _BATCH_SIZE):
+            batch = configs[i : i + _BATCH_SIZE]
+            or_clauses = ",".join(
+                f"and(make.eq.{make},model.eq.{model},year.eq.{year})"
+                for make, model, year in batch
+            )
+            try:
+                resp = await self._client.get(
+                    f"{self._rest_url}/market_value_cache",
+                    params={
+                        "or": f"({or_clauses})",
+                        "created_at": f"gt.{cutoff}",
+                        "select": "make,model,year,estimated_value,value_low,value_high,confidence,source",
+                    },
+                )
+                resp.raise_for_status()
+                for row in resp.json():
+                    key = (row["make"], row["model"], row["year"])
+                    result[key] = {
+                        "estimated_value": float(row["estimated_value"]),
+                        "value_low": float(row.get("value_low") or 0),
+                        "value_high": float(row.get("value_high") or 0),
+                        "confidence": row.get("confidence", "search"),
+                        "source": row.get("source", "tavily_search"),
+                    }
+            except Exception as exc:
+                logger.debug("Market value cache read failed: %s", exc)
+
+        return result
+
+    async def upsert_market_values(self, values: list[dict]) -> None:
+        """Persist Tavily market value results to the DB cache."""
+        if not values:
+            return
+
+        for i in range(0, len(values), _BATCH_SIZE):
+            batch = values[i : i + _BATCH_SIZE]
+            try:
+                resp = await self._client.post(
+                    f"{self._rest_url}/market_value_cache",
+                    json=batch,
+                    headers={
+                        **self._headers,
+                        "Prefer": "return=minimal,resolution=merge-duplicates",
+                    },
+                    params={"on_conflict": "make,model,year"},
+                )
+                resp.raise_for_status()
+            except Exception as exc:
+                logger.debug("Market value cache write failed: %s", exc)
 
     # ------------------------------------------------------------------
     # Cleanup
@@ -392,6 +495,15 @@ class ListingDB:
 # Helpers
 # ---------------------------------------------------------------------------
 
+def _is_valid_uuid(val: str) -> bool:
+    """Check if a string is a valid UUID."""
+    try:
+        uuid.UUID(str(val))
+        return True
+    except (ValueError, AttributeError):
+        return False
+
+
 def _listing_to_row(listing: dict) -> dict:
     """Map a scraper output dict to a DB listings row."""
     now = datetime.now(timezone.utc).isoformat()
@@ -403,8 +515,12 @@ def _listing_to_row(listing: dict) -> dict:
             "price": listing.get("price"),
         }]
 
+    # DB id column is UUID; generate one if the scraper ID isn't a valid UUID
+    raw_id = listing.get("id") or ""
+    db_id = raw_id if _is_valid_uuid(raw_id) else str(uuid.uuid4())
+
     return {
-        "id": listing.get("id") or str(uuid.uuid4()),
+        "id": db_id,
         "vin": listing.get("vin") or None,
         "year": listing.get("year"),
         "make": listing.get("make"),
@@ -431,7 +547,6 @@ def _db_score_to_dict(score_row: dict) -> dict:
         "reliability_score": float(score_row.get("reliability_score") or 0),
         "value_score": float(score_row.get("value_score") or 0),
         "efficiency_score": float(score_row.get("efficiency_score") or 0),
-        "ownership_cost_score": 50.0,  # not stored separately
         "recall_score": float(score_row.get("recall_penalty") or 0),
         "composite_score": float(score_row.get("composite_score") or 0),
         "breakdown": score_row.get("breakdown") or {},
@@ -441,7 +556,6 @@ def _db_score_to_dict(score_row: dict) -> dict:
 def score_dict_to_row(listing_id: str, score: dict) -> dict:
     """Map a scoring pipeline output dict to a listing_scores DB row."""
     return {
-        "id": str(uuid.uuid4()),
         "listing_id": listing_id,
         "safety_score": score.get("safety_score", 0),
         "reliability_score": score.get("reliability_score", 0),
