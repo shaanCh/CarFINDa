@@ -88,7 +88,27 @@ def _build_context_block(context: dict) -> str:
 
     # Listings with scores
     listings = context.get("listings", [])
-    scores = context.get("scores", {})
+    raw_scores = context.get("scores", {})
+    # Normalize scores: accept either a dict keyed by listing_id or a list of dicts
+    if isinstance(raw_scores, list):
+        scores = {}
+        for s in raw_scores:
+            if isinstance(s, dict):
+                sid = s.get("listing_id") or s.get("id")
+                if sid:
+                    scores[sid] = s
+    elif isinstance(raw_scores, dict):
+        scores = raw_scores
+    else:
+        scores = {}
+
+    # Also pull in top-level strengths/concerns/headline/explanation from frontend context
+    top_strengths = context.get("strengths", [])
+    top_concerns = context.get("concerns", [])
+    top_headline = context.get("headline")
+    top_explanation = context.get("explanation")
+    top_recall_count = context.get("recallCount")
+
     if listings:
         parts.append(f"\n## Listings ({len(listings)} results)")
         for i, listing in enumerate(listings, 1):
@@ -105,6 +125,18 @@ def _build_context_block(context: dict) -> str:
             parts.append(f"- Fuel: {listing.get('fuel_type', 'N/A')}")
             parts.append(f"- Transmission: {listing.get('transmission', 'N/A')}")
             parts.append(f"- Drivetrain: {listing.get('drivetrain', 'N/A')}")
+
+            # AI analysis from synthesis
+            if top_headline:
+                parts.append(f"- **Headline**: {top_headline}")
+            if top_explanation:
+                parts.append(f"- **Analysis**: {top_explanation}")
+            if top_strengths:
+                parts.append(f"- **Strengths**: {', '.join(top_strengths)}")
+            if top_concerns:
+                parts.append(f"- **Concerns**: {', '.join(top_concerns)}")
+            if top_recall_count is not None:
+                parts.append(f"- **Open Recalls**: {top_recall_count}")
 
             # Score breakdown
             score = scores.get(lid)
