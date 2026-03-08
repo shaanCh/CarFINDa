@@ -53,3 +53,10 @@ sidecar/data/
 
 # MCP config (contains secrets)
 .mcp.json
+
+# Build artifacts
+.next/
+sidecar/.data/
+
+# External projects
+Sift/
