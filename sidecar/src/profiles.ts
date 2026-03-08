@@ -136,7 +136,7 @@ export async function ensureBrowser(name: string): Promise<BrowserContext> {
         "--disable-dev-shm-usage",
         "--disable-background-networking",
         "--disable-sync",
-        "--headless=new",
+        ...(process.env.HEADLESS !== "false" ? ["--headless=new"] : []),
         ...STEALTH_ARGS,
       ],
       viewport: { width: 1440, height: 900 },
