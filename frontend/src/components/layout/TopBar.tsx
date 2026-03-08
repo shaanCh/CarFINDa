@@ -3,17 +3,17 @@ import Link from 'next/link';
 
 export function TopBar() {
   return (
-    <div className="sticky top-0 z-50 bg-white/80 backdrop-blur-md border-b border-[var(--border)] w-full w-full">
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
-        <Link href="/" className="font-sora font-bold text-2xl text-[var(--text-primary)] tracking-tight hover:text-[var(--blue-dark)] transition-colors">
-          Carvex
+    <div className="sticky top-0 z-50 bg-[var(--bg-primary)]/90 backdrop-blur-md border-b border-[var(--border)] w-full">
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-14 flex items-center justify-between">
+        <Link href="/" className="text-2xl tracking-tight text-[var(--text-primary)] hover:opacity-70 transition-opacity" style={{ fontFamily: 'var(--font-serif)' }}>
+          <i>Carfinda</i>
         </Link>
-        
-        <Link 
-          href="/" 
-          className="text-sm font-medium text-[var(--blue-dark)] hover:text-[var(--blue-mid)] transition-colors flex items-center gap-1 bg-[var(--blue-light)] py-1.5 px-3 rounded-full"
+
+        <Link
+          href="/"
+          className="text-sm text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors"
         >
-          &larr; <span className="hidden sm:inline">Edit Search</span>
+          &larr; New search
         </Link>
       </div>
     </div>
