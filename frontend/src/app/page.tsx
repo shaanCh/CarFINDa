@@ -3,7 +3,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import Image from 'next/image';
-import { Mountain, Zap, Fuel, Gauge } from 'lucide-react';
 
 const FILTER_OPTIONS = {
   budget: ['Under $10k', 'Under $20k', 'Under $30k', 'Under $50k'],
@@ -19,35 +18,12 @@ export default function LandingPage() {
   const [mounted, setMounted] = useState(false);
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [filters, setFilters] = useState<Record<string, string>>({});
-  const [userLocation, setUserLocation] = useState('');
   const inputRef = useRef<HTMLInputElement>(null);
   const filtersRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     setMounted(true);
     const timer = setTimeout(() => inputRef.current?.focus(), 800);
-
-    // Ask for location permission
-    if (navigator.geolocation) {
-      navigator.geolocation.getCurrentPosition(
-        async (pos) => {
-          try {
-            const res = await fetch(
-              `https://api.bigdatacloud.net/data/reverse-geocode-client?latitude=${pos.coords.latitude}&longitude=${pos.coords.longitude}&localityLanguage=en`
-            );
-            const data = await res.json();
-            const city = data.city || data.locality || '';
-            const state = data.principalSubdivisionCode?.replace('US-', '') || '';
-            if (city && state) setUserLocation(`${city}, ${state}`);
-          } catch {
-            // Silent fail — location is optional
-          }
-        },
-        () => {}, // User denied — that's fine
-        { timeout: 5000 }
-      );
-    }
-
     return () => clearTimeout(timer);
   }, []);
 
@@ -82,7 +58,6 @@ export default function LandingPage() {
     const searchParams = new URLSearchParams();
     if (query.trim()) searchParams.set('query', query.trim());
     Object.entries(filters).forEach(([k, v]) => searchParams.set(k, v));
-    if (userLocation && !filters.location) searchParams.set('location', userLocation);
     router.push(`/results?${searchParams.toString()}`);
   };
 
@@ -100,7 +75,7 @@ export default function LandingPage() {
 
       <div className={`landing-content ${mounted ? 'landing-content--visible' : ''}`}>
         <h1 className="landing-wordmark" style={{ fontFamily: 'var(--font-serif)' }}>
-          Carfinda
+          Carvex
         </h1>
 
         <form onSubmit={handleSearch} className="glass search-bar">
@@ -168,28 +143,6 @@ export default function LandingPage() {
             )}
           </button>
         </form>
-
-        <div className="example-prompts">
-          {[
-            { icon: <Mountain size={14} />, text: 'Reliable SUV under $25k with low mileage' },
-            { icon: <Zap size={14} />, text: 'Best electric cars under $35k' },
-            { icon: <Fuel size={14} />, text: 'Fuel-efficient sedan for a long commute' },
-            { icon: <Gauge size={14} />, text: 'Fun sports car under $20k' },
-          ].map(({ icon, text: prompt }) => (
-            <button
-              key={prompt}
-              type="button"
-              className="example-prompt-chip"
-              onClick={() => {
-                setQuery(prompt);
-                inputRef.current?.focus();
-              }}
-            >
-              <span className="example-prompt-icon">{icon}</span>
-              {prompt}
-            </button>
-          ))}
-        </div>
 
         <p className="landing-tagline">
           Your car agent. Finds it. Scores it. Negotiates it.
