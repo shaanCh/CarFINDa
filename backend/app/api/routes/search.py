@@ -91,12 +91,18 @@ async def create_search(
     scored_listings = await score_listings(raw_listings)
     logger.info("Scoring pipeline scored %d listings", len(scored_listings))
 
-    # ── Step 4: Synthesize recommendations ──
+    # ── Step 4: Synthesize recommendations (top 20 only for speed) ──
     synthesis = None
     if settings.GEMINI_API_KEY and scored_listings:
         try:
+            # Only send top-scored listings to avoid huge LLM context
+            top_for_synthesis = sorted(
+                scored_listings,
+                key=lambda x: x.get("score", {}).get("composite_score", 0),
+                reverse=True,
+            )[:20]
             synthesis = await synthesize_recommendations(
-                scored_listings=scored_listings,
+                scored_listings=top_for_synthesis,
                 user_query=request.natural_language or _describe_filters(filters),
                 parsed_preferences=nl_preferences or filters,
             )
