@@ -318,7 +318,9 @@ class CarMaxScraper:
                 "CarMax API attempt raised %s -- falling back to browser", exc
             )
 
-        # --- Fallback: sidecar browser + BS4 ---
+        # --- Fallback: sidecar browser + BS4 (only if browser available) ---
+        if not self._browser:
+            return all_listings
         try:
             browser_results = await self._search_via_browser(filters)
             if browser_results:
@@ -426,7 +428,7 @@ class CarMaxScraper:
 
             # Brief pause between pages
             if page_num < MAX_PAGES - 1:
-                await asyncio.sleep(1.0 + random.uniform(0.3, 1.0))
+                await asyncio.sleep(0.3 + random.uniform(0.1, 0.3))
 
         return all_listings if all_listings else None
 
@@ -542,7 +544,7 @@ class CarMaxScraper:
                     break
 
                 # Allow JS to finish rendering search results
-                await asyncio.sleep(2.0 + random.uniform(0.5, 1.5))
+                await asyncio.sleep(1.5)
 
                 # Retrieve the fully rendered HTML
                 try:
@@ -582,7 +584,7 @@ class CarMaxScraper:
 
                 # Brief pause between pages
                 if page_num < MAX_PAGES:
-                    await asyncio.sleep(1.0 + random.uniform(0.5, 1.5))
+                    await asyncio.sleep(0.5)
 
         finally:
             # Always clean up the browser session

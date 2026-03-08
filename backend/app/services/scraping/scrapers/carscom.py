@@ -27,11 +27,13 @@ import asyncio
 import logging
 import re
 import uuid
-from typing import Any
+from typing import Any, Optional
 from urllib.parse import urlencode
 
+import httpx
 from bs4 import BeautifulSoup, Tag
 
+from app.services.scraping.base_scraper import create_http_client
 from app.services.scraping.browser_client import BrowserClient
 
 logger = logging.getLogger(__name__)
@@ -102,17 +104,31 @@ def _tag_text(tag: Tag | None) -> str:
 # ---------------------------------------------------------------------------
 
 class CarsComScraper:
-    """Scraper for cars.com using sidecar browser + BeautifulSoup.
+    """Scraper for cars.com with httpx direct path (primary) and sidecar fallback.
 
-    Cars.com uses ``<spark-card>`` web components for listing cards.
-    The sidecar renders the full JS page, then we parse the DOM.
+    Primary: httpx GET → Cars.com serves server-rendered HTML with listing cards.
+    Fallback: sidecar browser rendering if httpx returns incomplete results.
     """
 
     source_name = "Cars.com"
 
-    def __init__(self, browser: BrowserClient, profile: str = "carfinda-carscom"):
+    def __init__(
+        self,
+        browser: Optional[BrowserClient] = None,
+        profile: str = "carfinda-carscom",
+        http_client: Optional[httpx.AsyncClient] = None,
+    ):
         self.browser = browser
         self.profile = profile
+        self._http_client = http_client
+        self._owns_client = http_client is None
+
+    @property
+    def http(self) -> httpx.AsyncClient:
+        if self._http_client is None:
+            self._http_client = create_http_client()
+            self._owns_client = True
+        return self._http_client
 
     # ------------------------------------------------------------------
     # URL building
@@ -189,7 +205,97 @@ class CarsComScraper:
     # ------------------------------------------------------------------
 
     async def search(self, filters: dict[str, Any]) -> list[dict[str, Any]]:
-        """Search Cars.com for listings matching *filters*."""
+        """Search Cars.com for listings matching *filters*.
+
+        Tries httpx direct fetch first (fast, no sidecar needed).
+        Falls back to sidecar browser if httpx returns 0 results.
+        """
+        # --- Primary path: httpx direct ---
+        try:
+            results = await self._search_via_httpx(filters)
+            if results:
+                logger.info("Cars.com: httpx path returned %d listings", len(results))
+                return results
+        except Exception as exc:
+            logger.warning("Cars.com: httpx path failed: %s -- trying browser fallback", exc)
+
+        # --- Fallback: sidecar browser ---
+        if self.browser:
+            try:
+                results = await self._search_via_browser(filters)
+                if results:
+                    logger.info("Cars.com: browser fallback returned %d listings", len(results))
+                    return results
+            except Exception as exc:
+                logger.error("Cars.com: browser fallback also failed: %s", exc, exc_info=True)
+        else:
+            logger.warning("Cars.com: no browser client available for fallback")
+
+        return []
+
+    async def _search_via_httpx(self, filters: dict[str, Any]) -> list[dict[str, Any]]:
+        """Fetch Cars.com search results directly via httpx (no sidecar)."""
+        all_listings: list[dict[str, Any]] = []
+        seen_urls: set[str] = set()
+
+        for page_num in range(1, MAX_PAGES + 1):
+            url = self.build_search_url(filters, page=page_num)
+            logger.info("Cars.com httpx: fetching page %d -- %s", page_num, url)
+
+            try:
+                resp = await self.http.get(
+                    url,
+                    headers={
+                        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                        "Referer": "https://www.cars.com/",
+                    },
+                    timeout=20.0,
+                )
+                resp.raise_for_status()
+                html = resp.text
+            except httpx.HTTPStatusError as exc:
+                logger.warning("Cars.com httpx: HTTP %d on page %d", exc.response.status_code, page_num)
+                break
+            except httpx.RequestError as exc:
+                logger.warning("Cars.com httpx: request error on page %d: %s", page_num, exc)
+                break
+
+            if not html or len(html) < 500:
+                logger.warning("Cars.com httpx: empty response on page %d", page_num)
+                break
+
+            raw_listings = self._parse_listings(html)
+
+            if not raw_listings:
+                logger.info("Cars.com httpx: no listings on page %d -- stopping", page_num)
+                break
+
+            new_count = 0
+            for raw in raw_listings:
+                normalized = self.normalize_listing(raw)
+                source_url = normalized.get("source_url", "")
+                if source_url in seen_urls:
+                    continue
+                if source_url:
+                    seen_urls.add(source_url)
+                all_listings.append(normalized)
+                new_count += 1
+
+            logger.info(
+                "Cars.com httpx: page %d yielded %d new listings (total: %d)",
+                page_num, new_count, len(all_listings),
+            )
+
+            if new_count == 0:
+                break
+
+            if page_num < MAX_PAGES:
+                await asyncio.sleep(0.3)
+
+        return all_listings
+
+    async def _search_via_browser(self, filters: dict[str, Any]) -> list[dict[str, Any]]:
+        """Fallback: use sidecar browser to render and scrape Cars.com."""
         all_listings: list[dict[str, Any]] = []
         seen_urls: set[str] = set()
 
@@ -198,30 +304,30 @@ class CarsComScraper:
 
             for page_num in range(1, MAX_PAGES + 1):
                 url = self.build_search_url(filters, page=page_num)
-                logger.info("Cars.com: navigating to page %d -- %s", page_num, url)
+                logger.info("Cars.com browser: navigating to page %d -- %s", page_num, url)
 
                 try:
                     await self.browser.navigate(self.profile, url)
                 except Exception as exc:
-                    logger.error("Cars.com: navigation failed on page %d: %s", page_num, exc)
+                    logger.error("Cars.com browser: navigation failed on page %d: %s", page_num, exc)
                     break
 
-                await asyncio.sleep(2.5)
+                await asyncio.sleep(1.5)
 
                 try:
                     html = await self.browser.content(self.profile)
                 except Exception as exc:
-                    logger.error("Cars.com: content fetch failed on page %d: %s", page_num, exc)
+                    logger.error("Cars.com browser: content fetch failed on page %d: %s", page_num, exc)
                     break
 
                 if not html or len(html) < 1000:
-                    logger.warning("Cars.com: empty response on page %d", page_num)
+                    logger.warning("Cars.com browser: empty response on page %d", page_num)
                     break
 
                 raw_listings = self._parse_listings(html)
 
                 if not raw_listings:
-                    logger.info("Cars.com: no listings on page %d -- stopping", page_num)
+                    logger.info("Cars.com browser: no listings on page %d -- stopping", page_num)
                     break
 
                 new_count = 0
@@ -236,7 +342,7 @@ class CarsComScraper:
                     new_count += 1
 
                 logger.info(
-                    "Cars.com: page %d yielded %d new listings (total: %d)",
+                    "Cars.com browser: page %d yielded %d new listings (total: %d)",
                     page_num, new_count, len(all_listings),
                 )
 
@@ -244,10 +350,10 @@ class CarsComScraper:
                     break
 
                 if page_num < MAX_PAGES:
-                    await asyncio.sleep(1.5)
+                    await asyncio.sleep(0.8)
 
         except Exception as exc:
-            logger.error("Cars.com scraping failed: %s", exc, exc_info=True)
+            logger.error("Cars.com browser scraping failed: %s", exc, exc_info=True)
         finally:
             try:
                 await self.browser.stop_session(self.profile)
@@ -265,18 +371,35 @@ class CarsComScraper:
         soup = BeautifulSoup(html, "html.parser")
         listings: list[dict[str, Any]] = []
 
-        # Cars.com uses <spark-card id="vehicle-card-..."> elements
+        # Strategy 1: <spark-card id="vehicle-card-..."> (JS-rendered)
         cards: list[Tag] = soup.find_all(
             "spark-card", id=re.compile(r"vehicle-card-")
         )
 
+        # Strategy 2: <div class="vehicle-card"> or similar containers
         if not cards:
-            # Fallback: find by vehicle detail links
+            cards = soup.find_all("div", class_=re.compile(r"vehicle-card", re.I))
+
+        # Strategy 3: Find by vehicle detail links and walk up to container
+        if not cards:
             links = soup.find_all("a", href=re.compile(r"/vehicledetail/"))
             for link in links:
-                card = link.find_parent("spark-card") or link.find_parent("li")
+                card = (
+                    link.find_parent("spark-card")
+                    or link.find_parent("div", class_=re.compile(r"vehicle|listing|card", re.I))
+                    or link.find_parent("li")
+                )
                 if card and card not in cards:
                     cards.append(card)
+
+        # Strategy 4: Look for any container with vehicledetail links
+        if not cards:
+            for container in soup.find_all(["div", "section", "li"]):
+                if container.find("a", href=re.compile(r"/vehicledetail/")):
+                    # Only add if it looks like a card (has price or title)
+                    text = container.get_text()
+                    if "$" in text and len(text) < 2000:
+                        cards.append(container)
 
         for card in cards:
             parsed = self._parse_single_card(card)
@@ -315,19 +438,25 @@ class CarsComScraper:
             return None
 
         # -- Price --
-        # The primary price is in a <p> > <span class="spark-body-larger">
         price: float | None = None
+        # Try spark-body-larger (JS-rendered)
         price_span = card.find("span", class_="spark-body-larger")
         if price_span:
             price = _safe_float(_tag_text(price_span))
+        # Try class-based price elements
         if price is None:
-            # Fallback: first <p> containing a dollar sign
-            for p in card.find_all("p"):
-                text = _tag_text(p)
-                if "$" in text and len(text) < 20:
+            price_el = card.find(class_=re.compile(r"primary-price|vehicle-price|list-price", re.I))
+            if price_el:
+                price = _safe_float(_tag_text(price_el))
+        if price is None:
+            # Fallback: any element with a dollar amount
+            for el in card.find_all(["span", "p", "div"]):
+                text = _tag_text(el)
+                if "$" in text and len(text) < 25:
                     price = _safe_float(text)
-                    if price:
+                    if price and price > 500:
                         break
+                    price = None
 
         # -- Mileage --
         mileage: int | None = None
@@ -477,18 +606,55 @@ _CITY_TO_ZIP: dict[str, str] = {
     "boulder, co": "80302",
     "denver, co": "80202",
     "colorado springs, co": "80903",
+    "fort collins, co": "80521",
+    "longmont, co": "80501",
+    "pueblo, co": "81001",
     "austin, tx": "78701",
     "dallas, tx": "75201",
     "houston, tx": "77001",
+    "san antonio, tx": "78201",
+    "fort worth, tx": "76101",
     "los angeles, ca": "90001",
     "san francisco, ca": "94102",
+    "san diego, ca": "92101",
+    "sacramento, ca": "95814",
+    "san jose, ca": "95101",
     "phoenix, az": "85001",
+    "scottsdale, az": "85251",
+    "tucson, az": "85701",
     "seattle, wa": "98101",
+    "portland, or": "97201",
     "chicago, il": "60601",
     "new york, ny": "10001",
     "miami, fl": "33101",
+    "tampa, fl": "33601",
+    "orlando, fl": "32801",
+    "jacksonville, fl": "32099",
     "atlanta, ga": "30301",
+    "nashville, tn": "37201",
+    "charlotte, nc": "28201",
+    "raleigh, nc": "27601",
     "salt lake city, ut": "84101",
+    "provo, ut": "84601",
+    "las vegas, nv": "89101",
+    "reno, nv": "89501",
+    "washington, dc": "20001",
+    "baltimore, md": "21201",
+    "boston, ma": "02101",
+    "philadelphia, pa": "19101",
+    "pittsburgh, pa": "15201",
+    "detroit, mi": "48201",
+    "ann arbor, mi": "48104",
+    "minneapolis, mn": "55401",
+    "indianapolis, in": "46201",
+    "columbus, oh": "43201",
+    "cleveland, oh": "44101",
+    "kansas city, mo": "64101",
+    "st. louis, mo": "63101",
+    "milwaukee, wi": "53201",
+    "omaha, ne": "68101",
+    "boise, id": "83701",
+    "albuquerque, nm": "87101",
 }
 
 

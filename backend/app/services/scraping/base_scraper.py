@@ -67,6 +67,7 @@ def create_http_client(
     *,
     headers: Optional[dict[str, str]] = None,
     timeout: float = REQUEST_TIMEOUT,
+    http2: bool = True,
 ) -> httpx.AsyncClient:
     """Create a shared httpx.AsyncClient with realistic browser headers.
 
@@ -82,7 +83,7 @@ def create_http_client(
         headers=merged_headers,
         timeout=httpx.Timeout(timeout, connect=10.0),
         follow_redirects=True,
-        http2=True,
+        http2=http2,
     )
 
 

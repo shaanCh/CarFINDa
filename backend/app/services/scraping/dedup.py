@@ -185,6 +185,9 @@ def deduplicate_listings(listings: list[dict[str, Any]]) -> list[dict[str, Any]]
 
     result = list(by_vin.values()) + list(by_fuzzy.values()) + orphans
 
+    # Enrich with cross-source price comparison
+    _enrich_cross_source(result)
+
     logger.info(
         "Deduplication: %d input -> %d output (%d VIN dupes, %d fuzzy dupes, %d orphans)",
         len(listings),
@@ -195,3 +198,50 @@ def deduplicate_listings(listings: list[dict[str, Any]]) -> list[dict[str, Any]]
     )
 
     return result
+
+
+def _enrich_cross_source(listings: list[dict[str, Any]]) -> None:
+    """Enrich listings with cross-source price comparison data.
+
+    For each listing with multiple sources, adds:
+      - cross_source_savings: how much cheaper this is vs highest source price
+      - cheapest_source: which source has the lowest price
+      - price_spread: difference between highest and lowest source price
+    """
+    multi_source_count = 0
+
+    for listing in listings:
+        sources = listing.get("sources", [])
+        if len(sources) < 2:
+            continue
+
+        # Get prices from each source
+        source_prices = []
+        for src in sources:
+            p = src.get("price")
+            if p and p > 0:
+                source_prices.append({"name": src.get("name", "?"), "price": p, "url": src.get("url")})
+
+        if len(source_prices) < 2:
+            continue
+
+        multi_source_count += 1
+        source_prices.sort(key=lambda x: x["price"])
+
+        cheapest = source_prices[0]
+        most_expensive = source_prices[-1]
+        spread = most_expensive["price"] - cheapest["price"]
+
+        listing["cross_source"] = {
+            "cheapest_source": cheapest["name"],
+            "cheapest_url": cheapest["url"],
+            "cheapest_price": cheapest["price"],
+            "highest_price": most_expensive["price"],
+            "highest_source": most_expensive["name"],
+            "price_spread": round(spread, 2),
+            "savings_pct": round((spread / most_expensive["price"]) * 100, 1) if most_expensive["price"] > 0 else 0,
+            "all_prices": [{"source": sp["name"], "price": sp["price"]} for sp in source_prices],
+        }
+
+    if multi_source_count:
+        logger.info("Cross-source enrichment: %d listings found on multiple sources", multi_source_count)
