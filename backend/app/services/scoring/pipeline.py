@@ -276,23 +276,19 @@ async def _score_listings_fast(listings: list[dict]) -> list[dict]:
 
     logger.info("Fast-scored %d listings (local only, no API calls)", len(scored))
 
-    # --- Phase 2: Enrich top picks with NHTSA + EPA (free APIs) -----------
-    _TOP_N = 10
-    top = sorted(scored, key=lambda x: x.get("score", {}).get("composite_score", 0), reverse=True)[:_TOP_N]
-    if not top:
-        return scored
-
-    # Collect unique configs from top picks only
-    top_configs: set[tuple[str, str, int]] = set()
-    for item in top:
+    # --- Phase 2: Enrich ALL listings with NHTSA + EPA (free APIs) --------
+    # Gov APIs are free and we batch by unique (make, model, year), so even
+    # 100 listings typically produce only 15-20 unique configs (~4 calls each).
+    all_configs: set[tuple[str, str, int]] = set()
+    for item in scored:
         m, mo, y = item.get("make", ""), item.get("model", ""), item.get("year", 0)
         if m and mo and y:
-            top_configs.add((m, mo, y))
+            all_configs.add((m, mo, y))
 
-    if not top_configs:
+    if not all_configs:
         return scored
 
-    logger.info("Enriching top %d listings (%d unique configs) with NHTSA/EPA", len(top), len(top_configs))
+    logger.info("Enriching %d listings (%d unique configs) with NHTSA/EPA", len(scored), len(all_configs))
 
     from app.services.scoring import nhtsa, epa
     enriched: dict[tuple[str, str, int], dict] = {}
@@ -315,13 +311,10 @@ async def _score_listings_fast(listings: list[dict]) -> list[dict]:
             data["fuel"] = results[3] if not isinstance(results[3], Exception) else None
         enriched[config] = data
 
-    await asyncio.gather(*[_enrich(cfg) for cfg in top_configs], return_exceptions=True)
+    await asyncio.gather(*[_enrich(cfg) for cfg in all_configs], return_exceptions=True)
 
-    # Re-score enriched listings with real API data
-    top_ids = {id(item) for item in top}
+    # Re-score ALL listings with real API data
     for item in scored:
-        if id(item) not in top_ids:
-            continue
         config_key = (item.get("make", ""), item.get("model", ""), item.get("year", 0))
         api_data = enriched.get(config_key)
         if not api_data:
@@ -350,7 +343,7 @@ async def _score_listings_fast(listings: list[dict]) -> list[dict]:
         item["data"]["recalls"] = _safe_dict(api_data.get("recalls"))
         item["data"]["fuel_economy"] = _safe_dict(api_data.get("fuel"))
 
-    logger.info("Enriched top %d listings with NHTSA/EPA data (%d configs)", len(top), len(enriched))
+    logger.info("Enriched %d listings with NHTSA/EPA data (%d configs)", len(scored), len(enriched))
     return scored
 
 

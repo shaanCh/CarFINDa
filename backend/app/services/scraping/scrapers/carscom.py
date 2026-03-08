@@ -510,6 +510,46 @@ class CarsComScraper:
             if src and "placeholder" not in src.lower() and src.startswith("http"):
                 image_urls.append(src)
 
+        # -- VIN extraction --
+        vin: str | None = None
+        # 1. data-vin or data-vehicle-vin attribute on card or child elements
+        for attr in ("data-vin", "data-vehicle-vin"):
+            vin_val = card.get(attr, "")
+            if vin_val and len(vin_val) == 17:
+                vin = vin_val.upper()
+                break
+        if not vin:
+            for child in card.find_all(attrs={"data-vin": True}):
+                vin_val = child.get("data-vin", "")
+                if vin_val and len(vin_val) == 17:
+                    vin = vin_val.upper()
+                    break
+        # 2. Extract from vehicledetail URL (some URLs embed VIN)
+        if not vin and source_url:
+            url_match = re.search(r"/vehicledetail/([A-HJ-NPR-Z0-9]{17})", source_url, re.I)
+            if url_match:
+                vin = url_match.group(1).upper()
+        # 3. Look for 17-char VIN pattern in card text/attrs
+        if not vin:
+            vin_el = card.find(string=re.compile(r"\b[A-HJ-NPR-Z0-9]{17}\b", re.I))
+            if vin_el:
+                vin_match = re.search(r"\b([A-HJ-NPR-Z0-9]{17})\b", str(vin_el), re.I)
+                if vin_match:
+                    vin = vin_match.group(1).upper()
+
+        # -- Body type --
+        body_type: str | None = None
+        body_el = card.find(string=re.compile(
+            r"\b(sedan|suv|truck|coupe|hatchback|convertible|wagon|van|minivan|crossover)\b", re.I
+        ))
+        if body_el:
+            bt_match = re.search(
+                r"\b(sedan|suv|truck|coupe|hatchback|convertible|wagon|van|minivan|crossover)\b",
+                str(body_el), re.I,
+            )
+            if bt_match:
+                body_type = bt_match.group(1).capitalize()
+
         return {
             "year": year,
             "make": make,
@@ -522,13 +562,14 @@ class CarsComScraper:
             "deal_rating": deal_rating,
             "location": location,
             "dealer_name": dealer,
-            "vin": None,
+            "vin": vin,
             "exterior_color": None,
             "interior_color": None,
             "fuel_type": None,
             "motor_type": None,
             "transmission": None,
             "drivetrain": None,
+            "body_type": body_type,
             "title": None,
             "monthly_payment": None,
             "mpg": None,
@@ -590,6 +631,7 @@ class CarsComScraper:
             "motor_type": raw.get("motor_type") or None,
             "transmission": raw.get("transmission") or None,
             "drivetrain": raw.get("drivetrain") or None,
+            "body_type": raw.get("body_type") or None,
             "deal_rating": raw.get("deal_rating") or None,
             "dealer_name": raw.get("dealer_name") or None,
             "title": raw.get("title") or None,

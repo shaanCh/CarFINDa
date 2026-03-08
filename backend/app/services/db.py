@@ -534,6 +534,7 @@ def _listing_to_row(listing: dict) -> dict:
         "fuel_type": listing.get("fuel_type"),
         "transmission": listing.get("transmission"),
         "drivetrain": listing.get("drivetrain"),
+        "body_type": listing.get("body_type") or None,
         "image_urls": listing.get("image_urls") or [],
         "sources": json.dumps(sources),
         "last_seen_at": now,

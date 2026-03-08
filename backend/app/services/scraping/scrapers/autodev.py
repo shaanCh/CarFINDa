@@ -201,6 +201,8 @@ class AutoDevScraper:
                     price = None
         if price == 0:
             price = None
+        if price is None:
+            return None  # Skip listings with no price
 
         # Mileage: use mileageUnformatted (int)
         mileage = item.get("mileageUnformatted")
@@ -258,10 +260,11 @@ class AutoDevScraper:
             "image_urls": image_urls,
             "exterior_color": color or None,
             "interior_color": None,
-            "fuel_type": None,
-            "motor_type": None,
-            "transmission": None,
-            "drivetrain": None,
+            "fuel_type": item.get("fuelType") or None,
+            "motor_type": item.get("engineType") or None,
+            "transmission": item.get("transmission") or None,
+            "drivetrain": item.get("drivetrain") or item.get("driveType") or None,
+            "body_type": item.get("bodyType") or None,
             "deal_rating": "Hot Deal" if item.get("isHot") else None,
             "dealer_name": dealer or None,
         }
