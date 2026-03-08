@@ -65,7 +65,7 @@ async def _polite_delay() -> None:
 # Shared HTTP client
 # ---------------------------------------------------------------------------
 
-_TIMEOUT = httpx.Timeout(15.0, connect=10.0)
+_TIMEOUT = httpx.Timeout(8.0, connect=5.0)
 _HEADERS = {"Accept": "application/json"}
 
 

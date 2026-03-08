@@ -99,25 +99,20 @@ async def estimate_market_value(
 
     settings = get_settings()
 
-    # 1) VinAudit — structured API
-    if settings.VINAUDIT_API_KEY:
+    # 1) VinAudit — structured API (skip demo key — it's rate-limited)
+    api_key = settings.VINAUDIT_API_KEY
+    if api_key and api_key != "VA_DEMO_KEY":
         vinaudit_result = await _vinaudit_lookup(
-            make, model, year, mileage, trim, vin, settings.VINAUDIT_API_KEY,
+            make, model, year, mileage, trim, vin, api_key,
         )
         if vinaudit_result is not None:
             _cache_set(cache_key, vinaudit_result, _TTL_VALUE)
             return vinaudit_result
 
-    # 2) Tavily — web search fallback
-    if settings.TAVILY_API_KEY:
-        tavily_result = await _tavily_lookup(
-            make, model, year, mileage, trim, settings.TAVILY_API_KEY,
-        )
-        if tavily_result is not None:
-            _cache_set(cache_key, tavily_result, _TTL_VALUE)
-            return tavily_result
-
-    # 3) Depreciation formula — offline fallback
+    # 2) Depreciation formula — fast offline fallback
+    # (Tavily web search is available but too slow for batch scoring;
+    #  it adds ~3-5s per listing.  The depreciation formula is instant
+    #  and good enough for comparative ranking.)
     fallback = _depreciation_estimate(make, model, year, mileage)
     _cache_set(cache_key, fallback, _TTL_VALUE)
     return fallback
@@ -142,7 +137,7 @@ async def _vinaudit_lookup(
 ) -> dict | None:
     """Query VinAudit for market value. Tries VIN first, then year/make/model/trim."""
     try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(15.0)) as client:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(5.0)) as client:
             # Try VIN-based lookup first if available
             if vin:
                 result = await _vinaudit_request(

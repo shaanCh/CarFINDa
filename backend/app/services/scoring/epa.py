@@ -36,7 +36,7 @@ def _cache_set(key: str, value: Any, ttl: float) -> None:
 # HTTP helpers
 # ---------------------------------------------------------------------------
 
-_TIMEOUT = httpx.Timeout(15.0, connect=10.0)
+_TIMEOUT = httpx.Timeout(8.0, connect=5.0)
 # fueleconomy.gov returns XML by default; we request JSON-like XML and parse,
 # but the REST API can also return JSON when we set the right header.
 _HEADERS = {
