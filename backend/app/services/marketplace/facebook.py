@@ -203,26 +203,19 @@ class FacebookMarketplaceScraper:
     # Search
     # ------------------------------------------------------------------
 
-    def _build_search_url(self, filters: dict) -> str:
-        """Build the Facebook Marketplace vehicles search URL from filters.
+    def _build_search_url(self, filters: dict) -> tuple[str, str]:
+        """Build the Facebook Marketplace vehicles URL and extract the search query.
 
-        Supported filter keys:
-            - query (str): Text search query (e.g., "Toyota Camry")
-            - min_price (int): Minimum price
-            - max_price (int): Maximum price
-            - min_year (int): Minimum model year
-            - max_year (int): Maximum model year
-            - max_mileage (int): Maximum mileage
-            - make (str): Vehicle make
-            - model (str): Vehicle model
-            - location (str): Location for search (city/zip)
-            - radius (int): Search radius in miles
+        Facebook Marketplace ignores the `query` URL parameter for vehicles —
+        you must physically type into the search bar. So we return the URL with
+        only filter params (price, year, mileage) and the query text separately.
 
         Args:
             filters: Dict of search filters.
 
         Returns:
-            The fully constructed Marketplace search URL.
+            Tuple of (url, search_query). search_query is the text to type
+            into the search bar (may be empty if no text search needed).
         """
         params: dict[str, str] = {}
 
@@ -240,7 +233,7 @@ class FacebookMarketplaceScraper:
         # "exact=false" broadens results to include similar vehicles
         params["exact"] = "false"
 
-        # Build query string from make/model if provided
+        # Build search query from make/model/query — typed into the search bar
         query_parts = []
         if filters.get("make"):
             query_parts.append(filters["make"])
@@ -249,24 +242,83 @@ class FacebookMarketplaceScraper:
         if filters.get("query"):
             query_parts.append(filters["query"])
 
-        base_url = FB_MARKETPLACE_VEHICLES_URL
-        if query_parts:
-            params["query"] = " ".join(query_parts)
+        search_query = " ".join(query_parts).strip()
 
+        base_url = FB_MARKETPLACE_VEHICLES_URL
         if params:
-            return f"{base_url}?{urlencode(params)}"
-        return base_url
+            return f"{base_url}?{urlencode(params)}", search_query
+        return base_url, search_query
+
+    async def _type_search_query(self, query: str) -> str:
+        """Type a search query into the Facebook Marketplace search bar.
+
+        Finds the search input in the current page snapshot, clicks it,
+        types the query, and presses Enter to submit.
+
+        Args:
+            query: The search text to type.
+
+        Returns:
+            The page snapshot after search results load.
+        """
+        # Get current snapshot to find search input
+        snapshot = await self.browser.snapshot(self.profile)
+
+        # Find the search input — FB Marketplace uses various labels
+        search_ref = None
+        patterns = [
+            r'textbox\s+"[^"]*(?:Search\s+Marketplace|Search\s+vehicles|Search)[^"]*"\s+\[ref=(e\d+)\]',
+            r'searchbox\s+"[^"]*"\s+\[ref=(e\d+)\]',
+            r'textbox\s+"[^"]*search[^"]*"\s+\[ref=(e\d+)\]',
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, snapshot, re.IGNORECASE)
+            if match:
+                search_ref = match.group(1)
+                logger.info("Found search input ref: %s (pattern: %s)", search_ref, pattern)
+                break
+
+        if not search_ref:
+            logger.warning("Could not find search input in snapshot, trying generic textbox")
+            # Fallback: look for any prominent textbox near the top
+            match = re.search(r'textbox\s+"[^"]*"\s+\[ref=(e\d+)\]', snapshot)
+            if match:
+                search_ref = match.group(1)
+                logger.info("Using fallback textbox ref: %s", search_ref)
+
+        if not search_ref:
+            logger.error("No search input found in Marketplace page")
+            return snapshot
+
+        # Click the search input to focus it
+        await self.browser.act(self.profile, "click", ref=search_ref)
+        await asyncio.sleep(0.5)
+
+        # Type the search query
+        await self.browser.act(self.profile, "type", ref=search_ref, text=query)
+        await asyncio.sleep(0.3)
+
+        # Press Enter to submit
+        await self.browser.act(self.profile, "press", key="Enter")
+
+        # Wait for results to load
+        logger.info("Submitted search query: %s — waiting for results...", query)
+        await asyncio.sleep(3.0)
+
+        # Get the updated snapshot with search results
+        result_snapshot = await self.browser.snapshot(self.profile)
+        return result_snapshot or snapshot
 
     async def search_marketplace(self, filters: dict) -> list[dict]:
         """Search Facebook Marketplace with filters.
 
-        Auto-logs in if FB credentials are configured and user is not
-        already logged in. Navigates to the Marketplace vehicles URL with
-        search parameters, parses results from the snapshot, and paginates
-        by scrolling to load more results.
+        Navigates to the Marketplace vehicles page with URL filter params
+        (price, year, mileage), then types the search query into the search
+        bar and submits it (FB ignores query URL params for vehicles).
 
         Args:
-            filters: Search filter dict. See _build_search_url for supported keys.
+            filters: Search filter dict with keys: query, make, model,
+                     min_price, max_price, min_year, max_year, max_mileage.
 
         Returns:
             List of listing dicts with keys: title, year, make, model, price,
@@ -274,23 +326,22 @@ class FacebookMarketplaceScraper:
         """
         await self._ensure_session()
 
-        # Auto-login if credentials are available
-        settings = get_settings()
-        if settings.FB_EMAIL and settings.FB_PASSWORD:
-            logged_in = await self.ensure_logged_in()
-            if not logged_in:
-                logger.warning("Facebook auto-login failed — searching without login (filters may not work)")
+        url, search_query = self._build_search_url(filters)
+        logger.info("Navigating to Facebook Marketplace: %s", url)
+        if search_query:
+            logger.info("Will type search query: %s", search_query)
 
-        url = self._build_search_url(filters)
-        logger.info("Searching Facebook Marketplace: %s", url)
-
-        # Navigate to search results
+        # Navigate to Marketplace vehicles page (with price/year/mileage filters in URL)
         result = await self.browser.navigate(self.profile, url)
         snapshot = result.get("snapshot", "")
 
         if not snapshot.strip():
-            logger.warning("Empty snapshot from Marketplace search")
+            logger.warning("Empty snapshot from Marketplace navigation")
             return []
+
+        # If we have a text query, type it into the search bar
+        if search_query:
+            snapshot = await self._type_search_query(search_query)
 
         all_listings: list[dict] = []
         seen_titles: set[str] = set()
@@ -310,7 +361,6 @@ class FacebookMarketplaceScraper:
 
             # Scroll down to trigger lazy loading
             await self.browser.act(self.profile, "scroll", direction="down")
-            # Wait for new content to load
             await asyncio.sleep(2.0)
 
             # Get updated snapshot
@@ -325,7 +375,6 @@ class FacebookMarketplaceScraper:
                     seen_titles.add(title_key)
                     all_listings.append(listing)
 
-            # If no new listings were found, stop scrolling
             if len(all_listings) == previous_count:
                 logger.info(
                     "No new listings after scroll %d, stopping pagination",
