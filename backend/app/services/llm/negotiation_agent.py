@@ -237,7 +237,7 @@ def _build_negotiation_context(
         composite = score_data.get("composite_score", score_data.get("composite", "N/A"))
         parts.append(f"- Composite: {composite}/100")
         for key in ["safety_score", "reliability_score", "value_score",
-                     "efficiency_score", "ownership_cost_score", "recall_score"]:
+                     "efficiency_score", "recall_score"]:
             val = score_data.get(key)
             if val is not None:
                 label = key.replace("_score", "").replace("_", " ").title()

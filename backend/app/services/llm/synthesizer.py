@@ -35,10 +35,18 @@ vehicle listings from multiple marketplaces.
    recall counts, market value vs listing price, fuel economy, complaint
    patterns. Never fabricate data.
 
-3. **Provide a search summary** that captures the overall landscape:
+3. **Highlight cross-source price comparisons.** If a car is listed on
+   multiple sources at different prices, call out the savings explicitly:
+   "This exact car (VIN match) is $2,100 cheaper on CarMax than Cars.com."
+   This is a KEY differentiator.
+
+4. **Use deal scores** to prioritize recommendations. Great Deals and
+   Good Deals should rank higher. Reference specific savings amounts.
+
+5. **Provide a search summary** that captures the overall landscape:
    how many cars matched, price range found, any patterns or warnings.
 
-4. **Flag red flags** across all listings: recalls, price anomalies,
+6. **Flag red flags** across all listings: recalls, price anomalies,
    high complaint models.
 
 ## Output Rules
@@ -205,7 +213,7 @@ def _build_synthesis_context(
 
         # Component scores
         for key in ["safety_score", "reliability_score", "value_score",
-                     "efficiency_score", "ownership_cost_score", "recall_score"]:
+                     "efficiency_score", "recall_score"]:
             val = score.get(key)
             if val is not None:
                 label = key.replace("_score", "").replace("_", " ").title()
@@ -241,6 +249,26 @@ def _build_synthesis_context(
                     parts.append(f"  - ${diff:,.0f} BELOW market (good deal)")
                 elif diff < 0:
                     parts.append(f"  - ${abs(diff):,.0f} ABOVE market")
+
+        # Deal score
+        deal = listing.get("deal", {})
+        if deal.get("rating") and deal["rating"] != "Unknown":
+            parts.append(f"- Deal Rating: **{deal['rating']}**")
+            if deal.get("savings") and deal["savings"] != 0:
+                if deal["savings"] > 0:
+                    parts.append(f"  - ${deal['savings']:,.0f} below market ({deal.get('savings_pct', 0):.1f}%)")
+                else:
+                    parts.append(f"  - ${abs(deal['savings']):,.0f} above market")
+            if deal.get("source_badge"):
+                parts.append(f"  - Source badge: {deal['source_badge']}")
+
+        # Cross-source price comparison
+        cross = listing.get("cross_source")
+        if cross and cross.get("price_spread", 0) > 0:
+            parts.append(f"- CROSS-SOURCE: Found on {len(cross.get('all_prices', []))} sources!")
+            parts.append(f"  - Cheapest: ${cross['cheapest_price']:,.0f} on {cross['cheapest_source']}")
+            parts.append(f"  - Most expensive: ${cross['highest_price']:,.0f} on {cross['highest_source']}")
+            parts.append(f"  - You save ${cross['price_spread']:,.0f} ({cross.get('savings_pct', 0):.1f}%) by buying from {cross['cheapest_source']}")
 
         parts.append("")
 
