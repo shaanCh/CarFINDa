@@ -27,6 +27,8 @@ from urllib.parse import quote_plus, urlencode
 
 from app.config import get_settings
 from app.services.llm.gemini_client import GeminiClient
+from app.services.marketplace.fb_login import facebook_login, facebook_submit_2fa
+from app.services.marketplace.negotiation import get_negotiation_engine
 from app.services.scraping.browser_client import BrowserClient
 
 logger = logging.getLogger(__name__)
@@ -146,51 +148,56 @@ class FacebookMarketplaceScraper:
         await self.browser.start_session(self.profile)
 
     # ------------------------------------------------------------------
-    # Login Status
+    # Login
     # ------------------------------------------------------------------
 
     async def check_login_status(self) -> bool:
-        """Check if the user is logged into Facebook in this browser profile.
-
-        Navigates to Facebook and checks whether the page shows a logged-in
-        state (e.g., profile menu, notifications icon) vs a login form.
-
-        Returns:
-            True if logged in, False if not.
-        """
+        """Check if the user is logged into Facebook in this browser profile."""
         await self._ensure_session()
-
         try:
-            result = await self.browser.navigate(
-                self.profile,
-                "https://www.facebook.com/",
-            )
+            result = await self.browser.navigate(self.profile, "https://www.facebook.com/")
             snapshot = result.get("snapshot", "")
-
-            # Heuristics: If the snapshot contains login form elements, the user
-            # is not logged in. If it contains typical logged-in elements (like
-            # a profile link, notifications, messenger icon), they are logged in.
             login_indicators = ["log in", "log into", "create new account", "sign up"]
-            logged_in_indicators = [
-                "marketplace", "messenger", "notifications",
-                "what's on your mind", "create post",
-            ]
-
+            logged_in_indicators = ["marketplace", "messenger", "notifications", "what's on your mind", "create post"]
             snapshot_lower = snapshot.lower()
-
             login_score = sum(1 for ind in login_indicators if ind in snapshot_lower)
             logged_in_score = sum(1 for ind in logged_in_indicators if ind in snapshot_lower)
-
             is_logged_in = logged_in_score > login_score
-            logger.info(
-                "Facebook login check: logged_in=%s (login_indicators=%d, logged_in_indicators=%d)",
-                is_logged_in, login_score, logged_in_score,
-            )
+            logger.info("Facebook login check: logged_in=%s", is_logged_in)
             return is_logged_in
-
         except Exception as exc:
             logger.error("Failed to check Facebook login status: %s", exc)
             return False
+
+    async def login(self, email: str = "", password: str = "") -> dict:
+        """Log into Facebook automatically using credentials.
+
+        Credentials fall back to FB_EMAIL / FB_PASSWORD env vars if not provided.
+
+        Returns:
+            dict with keys: success, message, needs_2fa
+        """
+        await self._ensure_session()
+        return await facebook_login(
+            self.browser,
+            profile=self.profile,
+            email=email or None,
+            password=password or None,
+        )
+
+    async def submit_2fa(self, code: str) -> dict:
+        """Submit a 2FA code after login() returns needs_2fa=True."""
+        return await facebook_submit_2fa(self.browser, code, profile=self.profile)
+
+    async def ensure_logged_in(self, email: str = "", password: str = "") -> bool:
+        """Check login status and auto-login if needed. Returns True if logged in."""
+        if await self.check_login_status():
+            return True
+        result = await self.login(email, password)
+        if result["needs_2fa"]:
+            logger.warning("Facebook login requires 2FA — call submit_2fa() with code")
+            return False
+        return result["success"]
 
     # ------------------------------------------------------------------
     # Search
@@ -253,9 +260,10 @@ class FacebookMarketplaceScraper:
     async def search_marketplace(self, filters: dict) -> list[dict]:
         """Search Facebook Marketplace with filters.
 
-        Navigates to the Marketplace vehicles URL with search parameters,
-        parses results from the snapshot, and paginates by scrolling to load
-        more results.
+        Auto-logs in if FB credentials are configured and user is not
+        already logged in. Navigates to the Marketplace vehicles URL with
+        search parameters, parses results from the snapshot, and paginates
+        by scrolling to load more results.
 
         Args:
             filters: Search filter dict. See _build_search_url for supported keys.
@@ -265,6 +273,13 @@ class FacebookMarketplaceScraper:
             location, mileage, listing_url, seller_name, image_urls.
         """
         await self._ensure_session()
+
+        # Auto-login if credentials are available
+        settings = get_settings()
+        if settings.FB_EMAIL and settings.FB_PASSWORD:
+            logged_in = await self.ensure_logged_in()
+            if not logged_in:
+                logger.warning("Facebook auto-login failed — searching without login (filters may not work)")
 
         url = self._build_search_url(filters)
         logger.info("Searching Facebook Marketplace: %s", url)
@@ -571,13 +586,16 @@ class FacebookMarketplaceScraper:
     async def send_message(self, listing_url: str, message: str) -> dict:
         """Send a DM to the seller of a listing.
 
+        Facebook Marketplace listing pages have an inline message form:
+          - textbox "Send seller a message" [ref=eN]: Is this available?
+          - button "Send message to <name>" [ref=eM]
+
         Flow:
         1. Navigate to the listing page.
-        2. Take a snapshot to find the "Message Seller" or "Is this still available?" button.
-        3. Click the message button.
-        4. Type the personalized message.
-        5. Send it (press Enter or click Send).
-        6. Take a verification snapshot to confirm it was sent.
+        2. Find the inline textbox (pre-filled with "Is this available?").
+        3. Clear it and type our message.
+        4. Click the Send button.
+        5. Verify.
 
         Args:
             listing_url: URL of the Facebook Marketplace listing.
@@ -602,70 +620,67 @@ class FacebookMarketplaceScraper:
                     "error": "Empty listing page snapshot",
                 }
 
-            # Step 2: Find the message/contact button in the snapshot
-            # Look for common button refs: "Message Seller", "Is this still available?",
-            # "Send Message", "Contact Seller", "Ask about availability"
-            message_button_ref = self._find_message_button_ref(snapshot)
-
-            if not message_button_ref:
-                return {
-                    "success": False,
-                    "conversation_url": None,
-                    "error": "Could not find message/contact button on listing page",
-                }
-
-            # Step 3: Click the message button
-            click_result = await self.browser.act(
-                self.profile, "click", ref=message_button_ref,
-            )
-            await asyncio.sleep(2.0)  # Wait for message dialog to open
-
-            # Step 4: Take snapshot to find the message input field
-            snapshot = await self.browser.snapshot(self.profile)
+            # Step 2: Find the message textbox (inline on the page)
             input_ref = self._find_message_input_ref(snapshot)
 
             if not input_ref:
-                # Sometimes clicking the button navigates to Messenger directly
-                # Try to find a compose box in the current page
-                await asyncio.sleep(2.0)
+                # Maybe need to scroll down to load the message form
+                await self.browser.act(self.profile, "scroll", direction="down")
+                await asyncio.sleep(1.5)
                 snapshot = await self.browser.snapshot(self.profile)
                 input_ref = self._find_message_input_ref(snapshot)
 
             if not input_ref:
+                # Last resort: try clicking a "Message" button first (some layouts)
+                msg_btn = self._find_message_button_ref(snapshot)
+                if msg_btn:
+                    await self.browser.act(self.profile, "click", ref=msg_btn)
+                    await asyncio.sleep(2.0)
+                    snapshot = await self.browser.snapshot(self.profile)
+                    input_ref = self._find_message_input_ref(snapshot)
+
+            if not input_ref:
+                logger.error("Could not find message input. Snapshot excerpt:\n%s", snapshot[-2000:])
                 return {
                     "success": False,
                     "conversation_url": None,
-                    "error": "Could not find message input field after clicking contact button",
+                    "error": "Could not find message input field on listing page",
                 }
 
-            # Step 5: Clear any pre-filled text (like "Is this still available?")
-            # and type our custom message
-            await self.browser.act(
-                self.profile, "click", ref=input_ref,
-            )
-            # Select all existing text and replace it
-            await self.browser.act(
-                self.profile, "press", key="Meta+a",
-            )
+            # Step 3: Clear pre-filled text and type our message
+            # Triple-click to select all text in the textbox
+            await self.browser.act(self.profile, "click", ref=input_ref)
             await asyncio.sleep(0.3)
+            await self.browser.act(self.profile, "press", key="Meta+a")
+            await asyncio.sleep(0.2)
+            await self.browser.act(self.profile, "press", key="Backspace")
+            await asyncio.sleep(0.2)
 
-            # Type the message
+            # Type our custom message
             await self.browser.act(
                 self.profile, "type", ref=input_ref, text=message,
             )
             await asyncio.sleep(0.5)
 
-            # Step 6: Send the message (press Enter)
-            await self.browser.act(
-                self.profile, "press", key="Enter",
-            )
-            await asyncio.sleep(2.0)
+            # Step 4: Find and click the Send button
+            send_ref = self._find_send_button_ref(snapshot)
+            if not send_ref:
+                # Re-snapshot after typing (Send button may now be enabled)
+                snapshot = await self.browser.snapshot(self.profile)
+                send_ref = self._find_send_button_ref(snapshot)
 
-            # Step 7: Verify the message was sent
+            if send_ref:
+                await self.browser.act(self.profile, "click", ref=send_ref)
+            else:
+                # Fallback: press Enter to send
+                logger.info("Send button not found, pressing Enter to send")
+                await self.browser.act(self.profile, "press", key="Enter")
+
+            await asyncio.sleep(2.5)
+
+            # Step 5: Verify
             verification_snapshot = await self.browser.snapshot(self.profile)
 
-            # Try to determine the conversation URL from the current page
-            # After sending, Facebook usually shows the Messenger conversation
             tabs = await self.browser.list_tabs(self.profile)
             conversation_url = None
             for tab in tabs:
@@ -674,10 +689,9 @@ class FacebookMarketplaceScraper:
                     conversation_url = tab_url
                     break
 
-            # Check if the message appears in the verification snapshot
             message_sent = message[:50].lower() in verification_snapshot.lower()
 
-            if message_sent or "sent" in verification_snapshot.lower():
+            if message_sent or "sent" in verification_snapshot.lower() or "message sent" in verification_snapshot.lower():
                 logger.info("Message sent successfully for listing: %s", listing_url)
                 return {
                     "success": True,
@@ -702,82 +716,104 @@ class FacebookMarketplaceScraper:
                 "error": str(exc),
             }
 
-    def _find_message_button_ref(self, snapshot: str) -> Optional[str]:
-        """Find the element ref for the message/contact button in a snapshot.
-
-        Searches for common Facebook Marketplace contact button labels.
-
-        Args:
-            snapshot: AI-readable page snapshot text.
-
-        Returns:
-            Element ref string (e.g. "e12") or None if not found.
-        """
-        # Common button labels on FB Marketplace listing pages
-        button_patterns = [
-            r'(\be\d+\b)\s*.*?(?:message\s*seller)',
-            r'(\be\d+\b)\s*.*?(?:is\s*this\s*still\s*available)',
-            r'(\be\d+\b)\s*.*?(?:send\s*message)',
-            r'(\be\d+\b)\s*.*?(?:contact\s*seller)',
-            r'(\be\d+\b)\s*.*?(?:ask\s*about\s*availability)',
-            r'(\be\d+\b)\s*.*?(?:send\s*seller\s*a\s*message)',
-            # Reverse pattern: label then ref
-            r'(?:message\s*seller).*?(\be\d+\b)',
-            r'(?:is\s*this\s*still\s*available).*?(\be\d+\b)',
-            r'(?:send\s*message).*?(\be\d+\b)',
-            r'(?:contact\s*seller).*?(\be\d+\b)',
-        ]
-
-        snapshot_lower = snapshot.lower()
-        for pattern in button_patterns:
-            match = re.search(pattern, snapshot_lower)
-            if match:
-                ref = match.group(1)
-                logger.debug("Found message button ref: %s", ref)
-                return ref
-
-        # Fallback: look for any button-like element near messaging keywords
-        # Snapshot format typically has refs like [e5] or (e5) near element text
-        ref_pattern = r'\[?(e\d+)\]?\s*[:\-]?\s*(?:button|link)\s*.*?(?:message|contact|available)'
-        match = re.search(ref_pattern, snapshot_lower)
-        if match:
-            return match.group(1)
-
-        logger.warning("Could not find message button ref in snapshot")
-        return None
-
     def _find_message_input_ref(self, snapshot: str) -> Optional[str]:
-        """Find the element ref for the message text input in a snapshot.
+        """Find the textbox ref for the message input on a FB listing page.
+
+        Looks for patterns like:
+            textbox "Send seller a message" [ref=e999]: Is this available?
+            textbox [ref=e123]: Is this available?
 
         Args:
-            snapshot: AI-readable page snapshot text.
+            snapshot: Accessibility tree snapshot text.
 
         Returns:
-            Element ref string or None if not found.
+            Element ref string (e.g. "e999") or None.
         """
-        # Look for text input / textarea / compose box refs
+        # Pattern 1: textbox with "send seller" or "message" label containing [ref=eN]
         input_patterns = [
-            r'(\be\d+\b)\s*.*?(?:type\s*a\s*message)',
-            r'(\be\d+\b)\s*.*?(?:write\s*a\s*message)',
-            r'(\be\d+\b)\s*.*?(?:message\s*input)',
-            r'(\be\d+\b)\s*.*?(?:compose)',
-            r'(\be\d+\b)\s*.*?(?:textbox|textarea)',
-            r'(?:type\s*a\s*message).*?(\be\d+\b)',
-            r'(?:write\s*a\s*message).*?(\be\d+\b)',
-            r'(?:aa\s*placeholder).*?(\be\d+\b)',  # FB Messenger "Aa" placeholder
-            # Look for contenteditable or input refs
-            r'(\be\d+\b)\s*[:\-]?\s*(?:input|textbox|contenteditable)',
+            # textbox "Send seller a message" [ref=e999]
+            r'textbox\s+"[^"]*(?:send\s+seller|message)[^"]*"\s+\[ref=(e\d+)\]',
+            # textbox [ref=e999]: Is this available
+            r'textbox\s+\[ref=(e\d+)\][^:]*:\s*is this available',
+            # textbox "..." [ref=e999]: Is this available
+            r'textbox\s+"[^"]*"\s+\[ref=(e\d+)\][^:]*:\s*is this available',
+            # Any textbox near "send seller a message" context
+            r'textbox[^[]*\[ref=(e\d+)\][^\n]*(?:available|message)',
+            # Generic: textbox with ref near "seller" or "message" on same line
+            r'textbox\s+"[^"]*(?:seller|message)[^"]*"\s+\[ref=(e\d+)\]',
+            # Messenger compose box: textbox "Aa" or "Type a message"
+            r'textbox\s+"(?:Aa|Type a message|Write a message)[^"]*"\s+\[ref=(e\d+)\]',
+            # contenteditable near message context
+            r'contenteditable[^[]*\[ref=(e\d+)\]',
         ]
 
-        snapshot_lower = snapshot.lower()
         for pattern in input_patterns:
-            match = re.search(pattern, snapshot_lower)
+            match = re.search(pattern, snapshot, re.IGNORECASE)
             if match:
                 ref = match.group(1)
-                logger.debug("Found message input ref: %s", ref)
+                logger.info("Found message input ref: %s (pattern: %s)", ref, pattern[:40])
                 return ref
 
         logger.warning("Could not find message input ref in snapshot")
+        return None
+
+    def _find_send_button_ref(self, snapshot: str) -> Optional[str]:
+        """Find the Send button ref on a FB listing page.
+
+        Looks for patterns like:
+            button "Send message to Will McLean" [ref=e1007]
+            button "Send" [ref=e123]
+
+        Args:
+            snapshot: Accessibility tree snapshot text.
+
+        Returns:
+            Element ref string or None.
+        """
+        send_patterns = [
+            # button "Send message to ..." [ref=eN]
+            r'button\s+"Send\s+message\s+to\s+[^"]*"\s+\[ref=(e\d+)\]',
+            # button "Send" [ref=eN]
+            r'button\s+"Send"\s+\[ref=(e\d+)\]',
+            # Any button with "send" near a ref
+            r'button\s+"[^"]*[Ss]end[^"]*"\s+\[ref=(e\d+)\]',
+        ]
+
+        for pattern in send_patterns:
+            match = re.search(pattern, snapshot)
+            if match:
+                ref = match.group(1)
+                logger.info("Found send button ref: %s", ref)
+                return ref
+
+        logger.warning("Could not find send button ref in snapshot")
+        return None
+
+    def _find_message_button_ref(self, snapshot: str) -> Optional[str]:
+        """Find the Message button ref (top of listing page).
+
+        Looks for: button "Message" [ref=eN]
+
+        Args:
+            snapshot: Accessibility tree snapshot text.
+
+        Returns:
+            Element ref string or None.
+        """
+        patterns = [
+            r'button\s+"Message"\s+\[ref=(e\d+)\]',
+            r'button\s+"Message\s+[Ss]eller"\s+\[ref=(e\d+)\]',
+            r'button\s+"[^"]*[Cc]ontact[^"]*"\s+\[ref=(e\d+)\]',
+            r'button\s+"Is this still available[^"]*"\s+\[ref=(e\d+)\]',
+        ]
+
+        for pattern in patterns:
+            match = re.search(pattern, snapshot)
+            if match:
+                ref = match.group(1)
+                logger.info("Found message button ref: %s", ref)
+                return ref
+
         return None
 
     # ------------------------------------------------------------------
@@ -1018,6 +1054,196 @@ class FacebookMarketplaceScraper:
             messages_sent, len(listings_to_contact),
         )
         return results
+
+    # ------------------------------------------------------------------
+    # AI-Powered Outreach & Negotiation
+    # ------------------------------------------------------------------
+
+    async def smart_outreach(
+        self,
+        listing: dict,
+        scoring_data: dict | None = None,
+        target_price: float | None = None,
+        strategy: str = "balanced",
+    ) -> dict:
+        """Send an AI-generated negotiation message to a listing's seller.
+
+        Uses scoring data (market value, recalls, complaints) to craft a
+        compelling opening offer. The message is personalized and references
+        real data points as leverage.
+
+        Args:
+            listing:      Listing dict with at least listing_url and price.
+            scoring_data: Enriched data from the scoring pipeline (optional).
+            target_price: Desired price. Auto-calculated if not provided.
+            strategy:     "aggressive", "balanced", or "friendly".
+
+        Returns:
+            dict with: success, message_sent, target_price, conversation_url, error
+        """
+        listing_url = listing.get("listing_url") or listing.get("source_url")
+        if not listing_url:
+            return {"success": False, "error": "No listing URL"}
+
+        engine = get_negotiation_engine()
+        result = await engine.generate_opening_message(
+            listing=listing,
+            scoring_data=scoring_data,
+            target_price=target_price,
+            strategy=strategy,
+        )
+
+        message = result["message"]
+        logger.info(
+            "AI outreach for %s: strategy=%s target=$%s message=%s",
+            listing_url, strategy, result["target_price"], message[:80],
+        )
+
+        send_result = await self.send_message(listing_url, message)
+
+        return {
+            "success": send_result["success"],
+            "message_sent": message,
+            "target_price": result["target_price"],
+            "strategy_notes": result["strategy_notes"],
+            "conversation_url": send_result.get("conversation_url"),
+            "error": send_result.get("error"),
+        }
+
+    async def smart_reply(
+        self,
+        listing: dict,
+        seller_message: str,
+        conversation_history: list[dict],
+        conversation_url: str,
+        scoring_data: dict | None = None,
+        target_price: float | None = None,
+        max_price: float | None = None,
+        strategy: str = "balanced",
+    ) -> dict:
+        """Generate and optionally send an AI counter-offer reply.
+
+        Analyzes the seller's response and generates an appropriate
+        counter-offer. Only auto-sends if the analysis says it's safe;
+        otherwise returns the message for user approval.
+
+        Args:
+            listing:              Listing dict.
+            seller_message:       The seller's latest reply text.
+            conversation_history: [{role: "buyer"|"seller", message: str}, ...]
+            conversation_url:     Messenger conversation URL.
+            scoring_data:         Enriched scoring data (optional).
+            target_price:         Our ideal price.
+            max_price:            Max we'll pay.
+            strategy:             Negotiation approach.
+
+        Returns:
+            dict with: message, analysis, auto_sent, should_send, error
+        """
+        engine = get_negotiation_engine()
+        result = await engine.generate_counter(
+            listing=listing,
+            seller_message=seller_message,
+            conversation_history=conversation_history,
+            scoring_data=scoring_data,
+            target_price=target_price,
+            max_price=max_price,
+            strategy=strategy,
+        )
+
+        message = result["message"]
+        should_send = result["should_send"]
+        auto_sent = False
+
+        # Auto-send if the engine says it's safe (counter or accept)
+        if should_send and conversation_url:
+            send_result = await self.send_followup(conversation_url, message)
+            auto_sent = send_result.get("success", False)
+            if not auto_sent:
+                result["error"] = send_result.get("error")
+
+        return {
+            "message": message,
+            "analysis": result["analysis"],
+            "auto_sent": auto_sent,
+            "should_send": should_send,
+            "error": result.get("error"),
+        }
+
+    async def check_and_respond(
+        self,
+        active_negotiations: list[dict],
+        strategy: str = "balanced",
+    ) -> list[dict]:
+        """Check inbox for seller replies and auto-respond to active negotiations.
+
+        Args:
+            active_negotiations: List of dicts, each with:
+                listing (dict), conversation_url (str), target_price (float),
+                max_price (float), scoring_data (dict), history (list).
+
+        Returns:
+            List of response results for each conversation that had new messages.
+        """
+        inbox = await self.check_inbox()
+        results = []
+
+        for convo in inbox:
+            seller_name = convo.get("seller_name", "")
+            last_message = convo.get("last_message", "")
+            convo_url = convo.get("conversation_url", "")
+
+            if not convo.get("is_unread") or not last_message:
+                continue
+
+            # Match to an active negotiation
+            negotiation = self._match_negotiation(
+                seller_name, convo_url, active_negotiations,
+            )
+            if not negotiation:
+                continue
+
+            # Add seller message to history
+            history = negotiation.get("history", [])
+            history.append({"role": "seller", "message": last_message})
+
+            reply_result = await self.smart_reply(
+                listing=negotiation["listing"],
+                seller_message=last_message,
+                conversation_history=history,
+                conversation_url=convo_url,
+                scoring_data=negotiation.get("scoring_data"),
+                target_price=negotiation.get("target_price"),
+                max_price=negotiation.get("max_price"),
+                strategy=strategy,
+            )
+
+            # Add our reply to history
+            if reply_result.get("auto_sent"):
+                history.append({"role": "buyer", "message": reply_result["message"]})
+
+            results.append({
+                "seller_name": seller_name,
+                "seller_message": last_message,
+                **reply_result,
+            })
+
+        return results
+
+    def _match_negotiation(
+        self,
+        seller_name: str,
+        convo_url: str,
+        active_negotiations: list[dict],
+    ) -> dict | None:
+        """Match an inbox conversation to an active negotiation."""
+        for neg in active_negotiations:
+            if neg.get("conversation_url") == convo_url:
+                return neg
+            neg_seller = neg.get("listing", {}).get("seller_name", "")
+            if neg_seller and neg_seller.lower() == seller_name.lower():
+                return neg
+        return None
 
     def _personalize_message(self, template: str, listing: dict) -> str:
         """Fill in a message template with listing-specific data.

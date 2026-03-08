@@ -13,6 +13,7 @@ from typing import Any, Optional
 import httpx
 
 from app.services.marketplace.facebook import FacebookMarketplaceScraper
+from app.services.marketplace.negotiation import get_negotiation_engine
 
 logger = logging.getLogger(__name__)
 
@@ -145,12 +146,30 @@ class OutreachManager:
             raise
 
         # Step 2: Create outreach message records for each listing
+        # Use AI negotiation engine for "negotiating" style, templates otherwise
+        use_ai = message_style == "negotiating"
         template = MESSAGE_TEMPLATES[message_style]
         messages_to_create: list[dict] = []
         listings_capped = listings[:max_messages]
+        ai_messages: dict[int, str] = {}  # index -> AI message
 
-        for listing in listings_capped:
-            personalized = self.facebook._personalize_message(template, listing)
+        for i, listing in enumerate(listings_capped):
+            if use_ai:
+                try:
+                    engine = get_negotiation_engine()
+                    gen = await engine.generate_opening_message(
+                        listing=listing,
+                        scoring_data=listing.get("scoring_data"),
+                        strategy="balanced",
+                    )
+                    personalized = gen["message"]
+                    ai_messages[i] = personalized
+                except Exception as exc:
+                    logger.warning("AI message generation failed for listing %s, using template: %s", listing.get("id"), exc)
+                    personalized = self.facebook._personalize_message(template, listing)
+            else:
+                personalized = self.facebook._personalize_message(template, listing)
+
             message_record = {
                 "id": str(uuid.uuid4()),
                 "campaign_id": campaign_id,
@@ -180,12 +199,27 @@ class OutreachManager:
                 raise
 
         # Step 3: Execute the outreach (send messages via Facebook)
-        outreach_results = await self.facebook.bulk_outreach(
-            listings=listings_capped,
-            message_template=template,
-            max_messages=max_messages,
-            delay_seconds=30,
-        )
+        if use_ai:
+            # For AI-generated messages, send each individually with its custom text
+            import asyncio
+            outreach_results = []
+            for i, listing in enumerate(listings_capped):
+                listing_url = listing.get("listing_url") or listing.get("source_url")
+                if not listing_url:
+                    outreach_results.append({"success": False, "error": "No listing URL"})
+                    continue
+                msg_text = messages_to_create[i]["message_text"]
+                result = await self.facebook.send_message(listing_url, msg_text)
+                outreach_results.append(result)
+                if i < len(listings_capped) - 1:
+                    await asyncio.sleep(30)
+        else:
+            outreach_results = await self.facebook.bulk_outreach(
+                listings=listings_capped,
+                message_template=template,
+                max_messages=max_messages,
+                delay_seconds=30,
+            )
 
         # Step 4: Update message records with results
         sent_count = 0
