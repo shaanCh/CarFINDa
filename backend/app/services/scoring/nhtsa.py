@@ -44,7 +44,7 @@ def _cache_set(key: str, value: Any, ttl: float) -> None:
 # Rate-limiting helper — small delay between sequential government API calls
 # ---------------------------------------------------------------------------
 
-_INTER_REQUEST_DELAY = 0.15  # 150 ms between calls (polite)
+_INTER_REQUEST_DELAY = 0.05  # 50 ms between calls (polite but not a bottleneck)
 
 _last_request_time: float = 0.0
 _request_lock = asyncio.Lock()
@@ -66,7 +66,10 @@ async def _polite_delay() -> None:
 # ---------------------------------------------------------------------------
 
 _TIMEOUT = httpx.Timeout(8.0, connect=5.0)
-_HEADERS = {"Accept": "application/json"}
+_HEADERS = {
+    "Accept": "application/json",
+    "User-Agent": "CarFINDa/1.0 (vehicle-scoring-service)",
+}
 
 
 def _client() -> httpx.AsyncClient:
@@ -108,9 +111,9 @@ async def get_safety_ratings(make: str, model: str, year: int) -> dict:
         results = data.get("Results", [])
 
         # The first call returns vehicle IDs; we need to fetch each variant
-        # to get actual star ratings.
+        # to get actual star ratings.  Limit to 3 variants to avoid excessive calls.
         variants: list[dict] = []
-        for item in results:
+        for item in results[:3]:
             vehicle_id = item.get("VehicleId")
             if vehicle_id is None:
                 continue
