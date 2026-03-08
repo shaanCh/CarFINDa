@@ -1,6 +1,8 @@
 import uuid
+import asyncio
 
 from fastapi import APIRouter, Depends, status
+from fastapi.responses import StreamingResponse
 
 from app.dependencies import get_current_user
 from app.models.schemas import ChatRequest, ChatResponse
@@ -35,4 +37,40 @@ async def send_message(
     return ChatResponse(
         message=stub_reply,
         session_id=session_id,
+    )
+
+
+@router.post("/stream")
+async def stream_message(
+    request: ChatRequest,
+    user: dict = Depends(get_current_user),
+):
+    """Send a message and stream the reply via SSE.
+
+    TODO: Yield responses from Gemini streaming completions.
+    """
+    async def event_stream():
+        # Stub streaming response matching frontend's mock
+        await asyncio.sleep(0.6)
+        
+        message_topic = 'the price' if hasattr(request, 'message') and 'price' in request.message.lower() else 'this car'
+        listing_str = request.listing_ids[0] if request.listing_ids else "unknown"
+        
+        response_text = (
+            f"That's a great question about {message_topic} (ID: {listing_str}). "
+            "Based on our analysis, this is a solid choice. The numbers look good given the current market, "
+            "and its reliability score is in range. \n\nHowever, always make sure to ask for maintenance records before purchasing. "
+            "Do you want to know more about similar cars, or do you want negotiation tips?"
+        )
+        
+        words = response_text.split(" ")
+        for word in words:
+            yield f'data: {{"text": "{word} "}}\n\n'
+            await asyncio.sleep(0.03)
+            
+        yield 'data: [DONE]\n\n'
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream"
     )

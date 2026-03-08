@@ -1,41 +1,33 @@
 export async function POST(request: Request) {
+  const BACKEND_URL = 'http://127.0.0.1:8000';
+
   try {
     const { listingId, userMessage } = await request.json();
 
-    const encoder = new TextEncoder();
-    
-    // Create a streaming response
-    const stream = new ReadableStream({
-      async start(controller) {
-        // Simulate thinking before streaming
-        await new Promise(resolve => setTimeout(resolve, 600));
-
-        const responseText = `That's a great question about ${userMessage.toLowerCase().includes('price') ? 'the price' : 'this car'} (ID: ${listingId}). ` +
-          `Based on our analysis, this is a solid choice. The numbers look good given the current market, ` +
-          `and its reliability score is in range. \n\nHowever, always make sure to ask for maintenance records before purchasing. ` +
-          `Do you want to know more about similar cars, or do you want negotiation tips?`;
-          
-        // Stream it back word by word over naive SSE chunking
-        const words = responseText.split(' ');
-        for (const word of words) {
-          const chunk = `data: ${JSON.stringify({ text: word + ' ' })}\n\n`;
-          controller.enqueue(encoder.encode(chunk));
-          await new Promise(resolve => setTimeout(resolve, 30)); // fast typing simulation
-        }
-        
-        controller.enqueue(encoder.encode('data: [DONE]\n\n'));
-        controller.close();
-      }
+    const res = await fetch(`${BACKEND_URL}/api/chat/stream`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+         message: userMessage,
+         listing_ids: [listingId],
+         session_id: null // handled by backend
+      })
     });
 
-    return new Response(stream, {
+    if (!res.ok) {
+       return new Response(JSON.stringify({ error: 'Backend streaming error' }), { status: res.status });
+    }
+
+    // Proxy the stream back to the client directly
+    return new Response(res.body, {
       headers: {
         'Content-Type': 'text/event-stream; charset=utf-8',
         'Cache-Control': 'no-cache, no-transform',
         'Connection': 'keep-alive',
       },
     });
+
   } catch(error) {
-     return new Response(JSON.stringify({ error: 'failed' }), { status: 500 });
+     return new Response(JSON.stringify({ error: 'proxy failed' }), { status: 500 });
   }
 }
